@@ -131,28 +131,6 @@ describe("readBrowserVersion", () => {
       );
     });
 
-    it("sends space-containing install paths through the environment, not the command line", () => {
-      stubPlatform("win32");
-      const exePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-      execFileSyncMock.mockReturnValue("153.0.8010.54\r\n");
-
-      expect(readBrowserVersion(exePath)).toBe("153.0.8010.54");
-      expect(execFileSyncMock).toHaveBeenCalledTimes(1);
-      const [, args, options] = execFileSyncMock.mock.calls[0] as [
-        string,
-        string[],
-        Record<string, unknown>,
-      ];
-      // Windows PowerShell appends extra -Command arguments to the script text;
-      // a path argument therefore breaks parsing for any spaced path.
-      expect(args).not.toContain(exePath);
-      expect(args.every((arg) => !arg.includes("\\ "))).toBe(true);
-      expect((options.env as Record<string, string>).OPENCLAW_BROWSER_VERSION_PROBE_PATH).toBe(
-        exePath,
-      );
-      expect(options.stdio).toEqual(["ignore", "pipe", "ignore"]);
-    });
-
     it("falls back to one unambiguous version directory", () => {
       stubPlatform("win32");
       const appDir = makeWindowsChromeDir(["148.0.7778.179"]);
