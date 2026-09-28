@@ -6,11 +6,17 @@ import { generateMusic, listRuntimeMusicGenerationProviders } from "./runtime.js
 import type { MusicGenerationProvider, MusicGenerationRequest } from "./types.js";
 
 let providers: MusicGenerationProvider[] = [];
+let warnings: string[] = [];
 const listProviders = vi.fn((_config?: OpenClawConfig) => providers);
 const runtimeDeps: NonNullable<Parameters<typeof generateMusic>[1]> = {
   getProvider: (id) => providers.find((provider) => provider.id === id),
   listProviders,
-  log: { debug: () => {} },
+  log: {
+    debug: () => {},
+    warn: (message: string) => {
+      warnings.push(message);
+    },
+  },
 };
 
 function musicConfig(music: AgentToolModelConfig): OpenClawConfig {
@@ -45,6 +51,7 @@ function createProvider(id = "music-plugin", overrides: Partial<MusicGenerationP
 describe("music-generation runtime", () => {
   beforeEach(() => {
     providers = [];
+    warnings = [];
     listProviders.mockClear();
   });
 
@@ -106,6 +113,9 @@ describe("music-generation runtime", () => {
         error: "Google music generation response missing audio data",
       },
     ]);
+    expect(warnings).toContain(
+      "music-generation candidate failed: google/lyria-3-clip-preview: Google music generation response missing audio data",
+    );
   });
 
   it("falls through when a music provider returns an empty buffer", async () => {
