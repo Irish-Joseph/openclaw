@@ -57,6 +57,18 @@ const OPENAI_SERVER_ERROR_PAYLOAD =
   'Codex error: {"type":"error","error":{"type":"server_error","code":"server_error","message":"An error occurred while processing your request."},"sequence_number":2}';
 
 describe("failover-error", () => {
+  it("preserves an Ollama model-retirement error instead of coercing it to a timeout", () => {
+    const body = JSON.stringify({
+      error: "glm-5.1 was retired at 2026-09-25 00:00:00 -0700 PDT (ref: synthetic-retirement)",
+    });
+    const error = Object.assign(new Error(`410 ${body}`), { status: 410, body });
+    expect(coerceToFailoverError(error, { provider: "ollama" })).toMatchObject({
+      reason: "model_not_found",
+      status: 410,
+      rawError: error.message,
+    });
+  });
+
   it("does not promote a direct preflight into a provider failure", () => {
     const message = "handoff refused: 529 OVERLOADED";
     const cause = { status: 529, code: "OVERLOADED", message: "overloaded" };
