@@ -100,7 +100,7 @@ describe("readBrowserVersion", () => {
       return appDir;
     }
 
-    it("reads PE product metadata without interpolating the executable path", () => {
+    it("reads PE product metadata with the executable path passed as environment data", () => {
       stubPlatform("win32");
       const exePath = "C:\\Users\\Example\\Browser's Path\\chrome.exe";
       execFileSyncMock.mockReturnValue("148.0.7778.179\r\n");
@@ -121,11 +121,36 @@ describe("readBrowserVersion", () => {
           "-NoProfile",
           "-NonInteractive",
           "-Command",
-          "[System.Diagnostics.FileVersionInfo]::GetVersionInfo($args[0]).ProductVersion",
-          exePath,
+          "[System.Diagnostics.FileVersionInfo]::GetVersionInfo($env:OPENCLAW_BROWSER_VERSION_PROBE_PATH).ProductVersion",
         ],
-        expect.objectContaining({ timeout: 4000 }),
+        expect.objectContaining({
+          timeout: 4000,
+          stdio: ["ignore", "pipe", "ignore"],
+          env: expect.objectContaining({ OPENCLAW_BROWSER_VERSION_PROBE_PATH: exePath }),
+        }),
       );
+    });
+
+    it("sends space-containing install paths through the environment, not the command line", () => {
+      stubPlatform("win32");
+      const exePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+      execFileSyncMock.mockReturnValue("153.0.8010.54\r\n");
+
+      expect(readBrowserVersion(exePath)).toBe("153.0.8010.54");
+      expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+      const [, args, options] = execFileSyncMock.mock.calls[0] as [
+        string,
+        string[],
+        Record<string, unknown>,
+      ];
+      // Windows PowerShell appends extra -Command arguments to the script text;
+      // a path argument therefore breaks parsing for any spaced path.
+      expect(args).not.toContain(exePath);
+      expect(args.every((arg) => !arg.includes("\\ "))).toBe(true);
+      expect((options.env as Record<string, string>).OPENCLAW_BROWSER_VERSION_PROBE_PATH).toBe(
+        exePath,
+      );
+      expect(options.stdio).toEqual(["ignore", "pipe", "ignore"]);
     });
 
     it("falls back to one unambiguous version directory", () => {
