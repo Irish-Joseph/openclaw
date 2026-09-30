@@ -67,6 +67,10 @@ describe("short-term recall recording of Conversation Summary snippets", () => {
     ["- Conversation Summary: user: Confirm the rollout finished before closing the ticket.", false],
     ["Conversation Summary: assistant: Traced all three. No changes made.", false],
     ["* conversation summary:\n- Assistant: Traced all three.", false],
+    ["Conversation Summary: Session Key: agent:main:main", false],
+    ["Conversation Summary: Session ID: fixture-session", false],
+    ["Conversation Summary: - **Session Key**: agent:main:main", false],
+    ["Conversation Summary: Session Key rotation was completed.", true],
   ])("records %s: %s", async (snippet, accepted) => {
     const workspaceDir = path.join(fixtureRoot, `case-${caseId++}`);
     await fs.mkdir(path.join(workspaceDir, "memory", ".dreams"), { recursive: true });
