@@ -274,6 +274,47 @@ describe("plugin management service", () => {
     expect(mocks.replaceConfig).not.toHaveBeenCalled();
   });
 
+  it("reloads a bundled plugin that shadows a stale same-id install record", async () => {
+    const signal = new AbortController().signal;
+    const metadata = metadataSnapshot({ enabled: true, id: "voice-call" });
+    const bundledRootDir = "/source-build/dist/extensions/voice-call";
+    const plugin = {
+      ...metadata.index.plugins[0]!,
+      origin: "bundled" as const,
+      rootDir: bundledRootDir,
+    };
+    const staleRecord = { source: "path", installPath: "/registry/voice-call" };
+    mocks.metadata.mockReturnValue({
+      ...metadata,
+      index: { plugins: [plugin], installRecords: { "voice-call": staleRecord } },
+      byPluginId: new Map(
+        metadata.plugins.map((entry) => [entry.id, { ...entry, origin: "bundled" }]),
+      ),
+    });
+    mocks.readConfig.mockResolvedValue(configSnapshot());
+    const applyRuntime = vi.fn<PluginLifecycleRuntimeApply>(async (request) => {
+      request.assertInvokerOwned?.();
+      expect(request.expectedInstallHashes).toBeUndefined();
+      return {
+        operationId: "shadowed-reload",
+        generation: 5,
+        pluginIds: [...request.pluginIds],
+      };
+    });
+    await expect(
+      reloadManagedPlugin({
+        plugins: [{ pluginId: "voice-call" }],
+        env: {},
+        waitForDrain: true,
+        signal,
+        applyRuntime,
+      }),
+    ).resolves.toMatchObject({ pluginIds: ["voice-call"], application: { generation: 5 } });
+    expect(applyRuntime).toHaveBeenCalledOnce();
+    expect(mocks.commitRecords).not.toHaveBeenCalled();
+    expect(mocks.replaceConfig).not.toHaveBeenCalled();
+  });
+
   it.each([
     "install-hash-without-record",
     "ambiguous-owner",
