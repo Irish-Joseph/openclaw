@@ -64,7 +64,10 @@ describe("short-term recall recording of Conversation Summary snippets", () => {
     ["- Conversation Summary: The on-call handoff covered the load balancer rotation.", true],
     ["Conversation Summary: The assistant recommended a verified backup.", true],
     ["Conversation Summary:", false],
-    ["- Conversation Summary: user: Confirm the rollout finished before closing the ticket.", false],
+    [
+      "- Conversation Summary: user: Confirm the rollout finished before closing the ticket.",
+      false,
+    ],
     ["Conversation Summary: assistant: Traced all three. No changes made.", false],
     ["* conversation summary:\n- Assistant: Traced all three.", false],
     ["Conversation Summary: Session Key: agent:main:main", false],
