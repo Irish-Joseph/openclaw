@@ -59,46 +59,21 @@ describe("short-term recall recording of Conversation Summary snippets", () => {
     resetMemoryCoreDreamingStateForTests();
   });
 
-  const it = (title: string, run: (workspaceDir: string) => Promise<void>) =>
-    baseIt(title, async () => {
-      const dir = path.join(fixtureRoot, `case-${caseId++}`);
-      await fs.mkdir(path.join(dir, "memory", ".dreams"), { recursive: true });
-      await run(dir);
-    });
-
-  it("keeps ordinary prose under a Conversation Summary heading when recording short-term recalls", async (workspaceDir) => {
-    const proseSnippet = "Conversation Summary: Router VLAN 20 was migrated successfully.";
-    const headedBulletSnippet =
-      "- Conversation Summary: The on-call handoff covered the load balancer rotation.";
-    await recordMemoryRecalls(workspaceDir, "network migration", [
-      memoryRecallResult("memory/2026-06-18.md", 1, 1, 0.92, proseSnippet),
-      memoryRecallResult("memory/2026-06-18.md", 2, 2, 0.9, headedBulletSnippet),
-    ]);
-
-    expect(await readRecallStoreSnippets(workspaceDir)).toEqual(
-      [proseSnippet, headedBulletSnippet].toSorted(),
-    );
-  });
-
-  it("still ignores bare Conversation Summary labels and transcript wrappers", async (workspaceDir) => {
+  baseIt.each([
+    ["Conversation Summary: Router VLAN 20 was migrated successfully.", true],
+    ["- Conversation Summary: The on-call handoff covered the load balancer rotation.", true],
+    ["Conversation Summary: The assistant recommended a verified backup.", true],
+    ["Conversation Summary:", false],
+    ["- Conversation Summary: user: Confirm the rollout finished before closing the ticket.", false],
+    ["Conversation Summary: assistant: Traced all three. No changes made.", false],
+    ["* conversation summary:\n- Assistant: Traced all three.", false],
+  ])("records %s: %s", async (snippet, accepted) => {
+    const workspaceDir = path.join(fixtureRoot, `case-${caseId++}`);
+    await fs.mkdir(path.join(workspaceDir, "memory", ".dreams"), { recursive: true });
     await recordMemoryRecalls(workspaceDir, "session recap", [
-      memoryRecallResult("memory/2026-06-18.md", 1, 1, 0.92, "Conversation Summary:"),
-      memoryRecallResult(
-        "memory/2026-06-18.md",
-        2,
-        2,
-        0.9,
-        "- Conversation Summary: user: Confirm the rollout finished before closing the ticket.",
-      ),
-      memoryRecallResult(
-        "memory/2026-06-18.md",
-        3,
-        3,
-        0.88,
-        "Conversation Summary: assistant: Traced all three. No changes made.",
-      ),
+      memoryRecallResult("memory/2026-06-18.md", 1, 1, 0.92, snippet),
     ]);
 
-    expect(await readRecallStoreSnippets(workspaceDir)).toEqual([]);
+    expect(await readRecallStoreSnippets(workspaceDir)).toEqual(accepted ? [snippet] : []);
   });
 });

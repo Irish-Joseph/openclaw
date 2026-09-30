@@ -30,7 +30,8 @@ const DREAMING_TRANSCRIPT_PROMPT_LINE_RE =
   /\[[^\]]*dreaming-narrative[^\]]*]\s*(?:User|Assistant):\s*Write a dream diary entry from these memory fragments:?/i;
 const RAW_SESSION_METADATA_RE =
   /\bSession Key\b.{0,260}\bSession ID\b|\bSession ID\b.{0,260}\bSession Key\b/i;
-const RAW_CONVERSATION_SUMMARY_PREFIX_RE = /^(?:[-*+]\s*)?Conversation Summary:\s*/i;
+const RAW_CONVERSATION_SUMMARY_RE =
+  /^(?:[-*+]\s*)?Conversation Summary:\s*(?:$|(?:[-*+]\s*)?(?:user|assistant):\s)/i;
 const RAW_TRANSCRIPT_TURN_RE = /^(?:[-*+]\s*)?(?:user|assistant):\s/i;
 const MEMORY_FLUSH_PROMPT_RE =
   /Save important context from this session to the daily memory file\.\s*STRICT RULES:/i;
@@ -208,25 +209,6 @@ function hasDreamingNarrativeLead(snippet: string): boolean {
   return /\b(?:Candidate|Reflections?):/i.test(head) || /#{1,6}\s+Reflections?\b/i.test(head);
 }
 
-// A "Conversation Summary:" label alone is not evidence of contamination: daily-ingestion
-// chunks inherit their active Markdown heading, so ordinary bullets under a
-// "## Conversation Summary" heading are legitimate prose. Reject the wrapper only when its
-// remainder is raw transcript material or empty.
-function isRawConversationSummarySnippet(
-  snippet: string,
-  allowTranscriptTurnSnippet: boolean,
-): boolean {
-  const match = RAW_CONVERSATION_SUMMARY_PREFIX_RE.exec(snippet);
-  if (!match) {
-    return false;
-  }
-  const remainder = snippet.slice(match[0].length).trim();
-  if (!remainder) {
-    return true;
-  }
-  return !allowTranscriptTurnSnippet && RAW_TRANSCRIPT_TURN_RE.test(remainder);
-}
-
 export function isContaminatedDreamingSnippet(
   raw: string,
   opts: { allowTranscriptTurnSnippet?: boolean } = {},
@@ -239,7 +221,7 @@ export function isContaminatedDreamingSnippet(
     /<!--\s*openclaw-memory-promotion:/i.test(snippet) ||
     DREAMING_TRANSCRIPT_PROMPT_LINE_RE.test(snippet) ||
     RAW_SESSION_METADATA_RE.test(snippet) ||
-    isRawConversationSummarySnippet(snippet, Boolean(opts.allowTranscriptTurnSnippet)) ||
+    RAW_CONVERSATION_SUMMARY_RE.test(snippet) ||
     (!opts.allowTranscriptTurnSnippet && RAW_TRANSCRIPT_TURN_RE.test(snippet)) ||
     MEMORY_FLUSH_PROMPT_RE.test(snippet) ||
     PROMOTION_SCORE_METADATA_RE.test(snippet)
