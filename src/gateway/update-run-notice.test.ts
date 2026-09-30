@@ -130,7 +130,7 @@ describe("host-owned update notices", () => {
     },
   );
 
-  it("treats an idempotency conflict for the run's own key as already delivered", async () => {
+  it("treats an idempotency conflict with verified stored content as delivered", async () => {
     const target = {
       agentId: "main",
       sessionKey: "agent:main:main",
@@ -142,16 +142,17 @@ describe("host-owned update notices", () => {
       trigger: "chat",
       origin: { sessionKey: target.sessionKey },
     });
-    // Pre-admit a message with the same delivery intent key but different content,
-    // simulating a prior attempt where the health status differed.
+    // Pre-admit a message with the same delivery intent key that contains
+    // recognizable update-run notice content (includes the run ID).
     const deliveryIntentId = `update-run-finished:${initial.runId}`;
+    const priorNotice = `⬆️ Update completed for run ${initial.runId}. Gateway is healthy.`;
     await appendAssistantMessageToSessionTranscript({
       agentId: target.agentId,
       sessionKey: target.sessionKey,
       expectedSessionId: target.sessionId,
       expectedLifecycleRevision: null,
       storePath: target.storePath,
-      text: "⬆️ Previous update notice content (health was different)",
+      text: priorNotice,
       idempotencyKey: deliveryIntentId,
     });
     const finished = finishUpdateRun(initial.runId, { status: "succeeded" });
@@ -160,16 +161,16 @@ describe("host-owned update notices", () => {
     }
     const notify = await createUpdateRunNotifier(initial, () => ({}), {});
     const result = await notify(finished, "finished");
-    // The conflict for our own key is treated as delivered; verification is recorded.
+    // The conflict is verified: stored content contains the run ID → delivered.
     expect(result).toEqual({ delivered: true, owned: true });
     expect(getUpdateRun(initial.runId)?.verification.noticeDelivered).toBe(true);
   });
 
-  it("does not treat a non-matching conflict as delivered", async () => {
+  it("does not treat a conflict with unrecognized stored content as delivered", async () => {
     const target = {
       agentId: "main",
       sessionKey: "agent:main:main",
-      sessionId: "update-session-mismatch",
+      sessionId: "update-session-unrec",
       storePath: state.statePath("agents", "main", "sessions", "sessions.json"),
     };
     await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
@@ -177,22 +178,25 @@ describe("host-owned update notices", () => {
       trigger: "chat",
       origin: { sessionKey: target.sessionKey },
     });
-    // Pre-admit a message with a DIFFERENT key (not our delivery intent key).
-    // This simulates an unrelated transcript entry that happens to cause a
-    // session-level conflict but is not our notice.
+    // Pre-admit a message with the same key but content that is NOT an
+    // update-run notice (no run ID, no known markers).
+    const deliveryIntentId = `update-run-finished:${initial.runId}`;
+    await appendAssistantMessageToSessionTranscript({
+      agentId: target.agentId,
+      sessionKey: target.sessionKey,
+      expectedSessionId: target.sessionId,
+      expectedLifecycleRevision: null,
+      storePath: target.storePath,
+      text: "x", // minimal content that won't match any notice markers
+      idempotencyKey: deliveryIntentId,
+    });
     const finished = finishUpdateRun(initial.runId, { status: "succeeded" });
     if (!finished) {
       throw new Error("Missing finished update");
     }
-    // Force a session replacement so the append fails for a non-idempotency reason.
-    await upsertSessionEntryCore(target, {
-      sessionId: target.sessionId,
-      lifecycleRevision: "replaced",
-      updatedAt: 2,
-    });
     const notify = await createUpdateRunNotifier(initial, () => ({}), {});
     const result = await notify(finished, "finished");
-    // A non-idempotency failure should NOT be treated as delivered.
+    // Unrecognized content → not marked as delivered.
     expect(result.delivered).toBe(false);
     expect(getUpdateRun(initial.runId)?.verification.noticeDelivered).toBeUndefined();
   });

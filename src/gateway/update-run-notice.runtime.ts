@@ -1,6 +1,8 @@
 import { createDefaultDeps } from "../cli/deps.js";
 import type { CliDeps } from "../cli/deps.types.js";
 import { getRuntimeConfig } from "../config/config.js";
+import { loadTranscriptEvents } from "../config/sessions/session-accessor.js";
+import { readMessageIdempotencyKey } from "../config/sessions/transcript-message-identity.js";
 import { runWithoutOwnedSessionTranscriptWrites } from "../config/sessions/transcript-write-context.js";
 import { appendAssistantMessageToSessionTranscript } from "../config/sessions/transcript.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -104,22 +106,63 @@ export async function createUpdateRunNotifier(
           storePath: internal.storePath,
           text: message,
           idempotencyKey: deliveryIntentId,
-        }).catch((error: unknown) => {
-          // An idempotency conflict for OUR delivery intent key means a prior
-          // attempt already stored a notice under this key (with potentially
-          // different content, e.g., health status changed between attempts).
-          // The key format "update-run-<milestone>:<runId>" is unique to this
-          // code path, so the stored message is guaranteed to be an update-run
-          // notice. Treat it as delivered.
+        }).catch(async (error: unknown) => {
+          // An idempotency conflict means the stored message differs from the
+          // proposed one. Verify the stored content is actually our update-run
+          // notice before recording delivery.
           if (
             error instanceof Error &&
             error.name === "TranscriptTurnAdmissionConflictError" &&
             error.message.includes(deliveryIntentId)
           ) {
-            log.info(
-              `update run notice already delivered (idempotent conflict for key ${deliveryIntentId})`,
-            );
-            return { ok: true as const };
+            try {
+              const events = await loadTranscriptEvents({
+                agentId: internal.agentId,
+                sessionId: internal.entry.sessionId,
+                storePath: internal.storePath,
+              });
+              const stored = events.find((event) => {
+                const msg = (event as Record<string, unknown>)?.message;
+                return readMessageIdempotencyKey(msg) === deliveryIntentId;
+              });
+              const storedText = Array.isArray(
+                (stored as Record<string, unknown> | undefined)?.message,
+              )
+                ? ""
+                : (((
+                    (
+                      (stored as Record<string, unknown> | undefined)?.message as Record<
+                        string,
+                        unknown
+                      >
+                    )?.content as Array<Record<string, unknown>> | undefined
+                  )?.find((b) => b.type === "text")?.text as string | undefined) ?? "");
+              // Verify the stored content is an update-run notice (contains the
+              // run ID or a known notice marker).
+              const isOurNotice =
+                storedText.includes(run.runId) ||
+                storedText.includes("⬆️") ||
+                storedText.includes("⏳") ||
+                storedText.includes("🔁") ||
+                storedText.includes("OpenClaw") ||
+                storedText.includes("gateway");
+              if (isOurNotice) {
+                log.info(
+                  `update run notice already delivered (verified stored content for key ${deliveryIntentId})`,
+                );
+                return { ok: true as const };
+              }
+              log.warn(
+                `update run notice conflict for key ${deliveryIntentId} but stored content is not a recognized update-run notice; not marking as delivered`,
+              );
+              return {
+                ok: false as const,
+                reason: "conflicting stored content is not an update-run notice",
+              };
+            } catch {
+              // If we cannot read the transcript, fail closed.
+              return { ok: false as const, reason: formatErrorMessage(error) };
+            }
           }
           return { ok: false as const, reason: formatErrorMessage(error) };
         });
