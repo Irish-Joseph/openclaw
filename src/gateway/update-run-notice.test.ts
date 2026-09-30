@@ -5,6 +5,7 @@ import {
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import { withOwnedSessionTranscriptWrites } from "../config/sessions/transcript-write-context.js";
+import { appendAssistantMessageToSessionTranscript } from "../config/sessions/transcript.js";
 import {
   createUpdateRun,
   finishUpdateRun,
@@ -128,4 +129,71 @@ describe("host-owned update notices", () => {
       expect(getUpdateRun(run.runId)?.phase).toBe("requested");
     },
   );
+
+  it("treats an idempotency conflict for the run's own key as already delivered", async () => {
+    const target = {
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      sessionId: "update-session-idem",
+      storePath: state.statePath("agents", "main", "sessions", "sessions.json"),
+    };
+    await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
+    const initial = createUpdateRun({
+      trigger: "chat",
+      origin: { sessionKey: target.sessionKey },
+    });
+    // Pre-admit a message with the same delivery intent key but different content,
+    // simulating a prior attempt where the health status differed.
+    const deliveryIntentId = `update-run-finished:${initial.runId}`;
+    await appendAssistantMessageToSessionTranscript({
+      agentId: target.agentId,
+      sessionKey: target.sessionKey,
+      expectedSessionId: target.sessionId,
+      expectedLifecycleRevision: null,
+      storePath: target.storePath,
+      text: "⬆️ Previous update notice content (health was different)",
+      idempotencyKey: deliveryIntentId,
+    });
+    const finished = finishUpdateRun(initial.runId, { status: "succeeded" });
+    if (!finished) {
+      throw new Error("Missing finished update");
+    }
+    const notify = await createUpdateRunNotifier(initial, () => ({}), {});
+    const result = await notify(finished, "finished");
+    // The conflict for our own key is treated as delivered; verification is recorded.
+    expect(result).toEqual({ delivered: true, owned: true });
+    expect(getUpdateRun(initial.runId)?.verification.noticeDelivered).toBe(true);
+  });
+
+  it("does not treat a non-matching conflict as delivered", async () => {
+    const target = {
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      sessionId: "update-session-mismatch",
+      storePath: state.statePath("agents", "main", "sessions", "sessions.json"),
+    };
+    await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
+    const initial = createUpdateRun({
+      trigger: "chat",
+      origin: { sessionKey: target.sessionKey },
+    });
+    // Pre-admit a message with a DIFFERENT key (not our delivery intent key).
+    // This simulates an unrelated transcript entry that happens to cause a
+    // session-level conflict but is not our notice.
+    const finished = finishUpdateRun(initial.runId, { status: "succeeded" });
+    if (!finished) {
+      throw new Error("Missing finished update");
+    }
+    // Force a session replacement so the append fails for a non-idempotency reason.
+    await upsertSessionEntryCore(target, {
+      sessionId: target.sessionId,
+      lifecycleRevision: "replaced",
+      updatedAt: 2,
+    });
+    const notify = await createUpdateRunNotifier(initial, () => ({}), {});
+    const result = await notify(finished, "finished");
+    // A non-idempotency failure should NOT be treated as delivered.
+    expect(result.delivered).toBe(false);
+    expect(getUpdateRun(initial.runId)?.verification.noticeDelivered).toBeUndefined();
+  });
 });

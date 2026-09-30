@@ -104,7 +104,25 @@ export async function createUpdateRunNotifier(
           storePath: internal.storePath,
           text: message,
           idempotencyKey: deliveryIntentId,
-        }).catch((error: unknown) => ({ ok: false as const, reason: formatErrorMessage(error) }));
+        }).catch((error: unknown) => {
+          // An idempotency conflict for OUR delivery intent key means a prior
+          // attempt already stored a notice under this key (with potentially
+          // different content, e.g., health status changed between attempts).
+          // The key format "update-run-<milestone>:<runId>" is unique to this
+          // code path, so the stored message is guaranteed to be an update-run
+          // notice. Treat it as delivered.
+          if (
+            error instanceof Error &&
+            error.name === "TranscriptTurnAdmissionConflictError" &&
+            error.message.includes(deliveryIntentId)
+          ) {
+            log.info(
+              `update run notice already delivered (idempotent conflict for key ${deliveryIntentId})`,
+            );
+            return { ok: true as const };
+          }
+          return { ok: false as const, reason: formatErrorMessage(error) };
+        });
         delivered = notice.ok;
         if (!notice.ok) {
           log.warn(`update run notice append failed: ${notice.reason}`);
