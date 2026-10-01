@@ -470,6 +470,11 @@ export async function runGlobalPackageUpdateSteps(params: {
         ...(updateCwd ? { cwd: updateCwd } : {}),
         ...installEnv,
         timeoutMs: workTimeoutMs,
+        // pnpm 12.1.0's build-approval prompt tests whether stdin is a TTY and
+        // then attempts terminal I/O on its own (piped) stdout, failing with
+        // "IO error: not a terminal". Ignore stdin for pnpm only; npm and Bun
+        // lifecycle scripts may rely on inherited stdin.
+        ...(installCommandTarget.manager === "pnpm" ? { stdin: "ignore" as const } : {}),
       }),
       params.installTarget,
       params.env,
@@ -514,6 +519,7 @@ export async function runGlobalPackageUpdateSteps(params: {
           ...(preparedSpec.installCwd ? { cwd: preparedSpec.installCwd } : {}),
           ...installEnv,
           timeoutMs: workTimeoutMs,
+          ...(stagedInstall.installTarget.manager === "pnpm" ? { stdin: "ignore" as const } : {}),
         }),
         params.installTarget,
         params.env,

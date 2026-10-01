@@ -66,6 +66,8 @@ export type CommandOptions = {
   input?: string | Uint8Array;
   /** Borrow a caller-owned descriptor as stdin without buffering or piping its bytes. */
   stdinFileDescriptor?: number;
+  /** Override the default stdin mode for non-interactive commands. */
+  stdin?: "inherit" | "ignore";
   /** Synchronous admission with the spawned PID and argv, before input is released. */
   beforeInput?: (pid: number, argv?: readonly string[]) => void;
   baseEnv?: NodeJS.ProcessEnv;
@@ -246,7 +248,8 @@ async function runCommandWithOutputEncoding(
     reject: false,
     stdio: [
       // SAFETY: Execa forwards arbitrary numeric descriptors to Node; its stdin type narrows them to fd 0.
-      (options.stdinFileDescriptor as 0 | undefined) ?? (hasInput ? "pipe" : "inherit"),
+      (options.stdinFileDescriptor as 0 | undefined) ??
+        (hasInput ? "pipe" : (options.stdin ?? "inherit")),
       "pipe",
       "pipe",
     ],

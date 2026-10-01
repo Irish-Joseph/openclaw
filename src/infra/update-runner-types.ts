@@ -100,4 +100,6 @@ export type RunStepOptions = {
   stepIndex: number;
   totalSteps: number;
   results?: UpdateStepResult[];
+  /** Override stdin for non-interactive package-manager steps. */
+  stdin?: "inherit" | "ignore";
 };

@@ -57,6 +57,8 @@ export type PackageUpdateStepRunner = (params: {
   cwd?: string;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** Override stdin for non-interactive package-manager steps. */
+  stdin?: "inherit" | "ignore";
 }) => Promise<UpdateStepResult>;
 
 type PackageUpdateLifecycleResult =

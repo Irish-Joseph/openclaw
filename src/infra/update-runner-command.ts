@@ -39,7 +39,8 @@ function selectCommandFailureMessage(stdout: string, stderr: string): string {
 }
 
 export async function runStep(opts: RunStepOptions): Promise<UpdateStepResult> {
-  const { runCommand, name, argv, cwd, timeoutMs, env, progress, stepIndex, totalSteps } = opts;
+  const { runCommand, name, argv, cwd, timeoutMs, env, progress, stepIndex, totalSteps, stdin } =
+    opts;
   const command = argv.join(" ");
   const stepInfo: UpdateStepInfo = { name, command, index: stepIndex, total: totalSteps };
   progress?.onStepStart?.(stepInfo);
@@ -69,6 +70,7 @@ export async function runStep(opts: RunStepOptions): Promise<UpdateStepResult> {
       cwd,
       timeoutMs,
       env,
+      ...(stdin ? { stdin } : {}),
     });
   } catch (error) {
     commandError = { cause: error };
