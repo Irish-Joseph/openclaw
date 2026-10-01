@@ -412,8 +412,9 @@ export async function processCompletionsStream(
     if (!rawChunk || typeof rawChunk !== "object") {
       continue;
     }
-    // Hidden reasoning is still provider progress; keep the idle watchdog alive without exposing it.
-    notifyLlmRequestActivity(options?.signal);
+    // Content-free chunks must not re-arm the idle watchdog. Activity is
+    // reported below only for real progress: non-empty deltas, reasoning
+    // usage tokens, or finish_reason.
     const chunk = rawChunk as OpenAICompatibleChatCompletionChunk;
     output.responseId ||= chunk.id;
     // Retain the provider-returned model when it differs from the requested id so
@@ -431,6 +432,10 @@ export async function processCompletionsStream(
     }
     const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : undefined;
     if (!choice) {
+      // No choices: only reasoning usage counts as activity.
+      if (hasReasoningUsageActivity) {
+        notifyLlmRequestActivity(options?.signal);
+      }
       emitReasoningUsageActivity(hasReasoningUsageActivity);
       continue;
     }
@@ -453,8 +458,18 @@ export async function processCompletionsStream(
     }
     const rawChoiceDelta = choice.delta ?? choice.message;
     if (!rawChoiceDelta) {
+      // No delta: only reasoning usage or finish_reason count as activity.
+      if (hasReasoningUsageActivity || choice.finish_reason) {
+        notifyLlmRequestActivity(options?.signal);
+      }
       emitReasoningUsageActivity(hasReasoningUsageActivity);
       continue;
+    }
+    // Non-null delta: check for actual content or finish_reason.
+    // An empty object {} carries no progress.
+    const deltaHasContent = Object.keys(rawChoiceDelta).length > 0;
+    if (deltaHasContent || choice.finish_reason || hasReasoningUsageActivity) {
+      notifyLlmRequestActivity(options?.signal);
     }
     for (const normalizedDelta of normalizeToolCallDeltas(rawChoiceDelta, choice.finish_reason)) {
       const choiceDelta = normalizedDelta.delta;
