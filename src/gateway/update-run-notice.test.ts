@@ -142,10 +142,10 @@ describe("host-owned update notices", () => {
       trigger: "chat",
       origin: { sessionKey: target.sessionKey },
     });
-    // Pre-admit a message with the same delivery intent key that contains
-    // recognizable update-run notice content (includes the run ID).
+    // Pre-admit a message with the same delivery intent key that matches
+    // the production renderer output format (renderUpdateRunReport).
     const deliveryIntentId = `update-run-finished:${initial.runId}`;
-    const priorNotice = `⬆️ Update completed for run ${initial.runId}. Gateway is healthy.`;
+    const priorNotice = `✅ OpenClaw updated to 2026.9.7 (from 2026.9.6).`;
     await appendAssistantMessageToSessionTranscript({
       agentId: target.agentId,
       sessionKey: target.sessionKey,
@@ -161,7 +161,8 @@ describe("host-owned update notices", () => {
     }
     const notify = await createUpdateRunNotifier(initial, () => ({}), {});
     const result = await notify(finished, "finished");
-    // The conflict is verified: stored content contains the run ID → delivered.
+    // The conflict is verified: stored content matches the finished-report
+    // renderer pattern → delivered.
     expect(result).toEqual({ delivered: true, owned: true });
     expect(getUpdateRun(initial.runId)?.verification.noticeDelivered).toBe(true);
   });

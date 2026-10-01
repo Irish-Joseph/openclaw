@@ -1,8 +1,7 @@
 import { createDefaultDeps } from "../cli/deps.js";
 import type { CliDeps } from "../cli/deps.types.js";
 import { getRuntimeConfig } from "../config/config.js";
-import { loadTranscriptEvents } from "../config/sessions/session-accessor.js";
-import { readMessageIdempotencyKey } from "../config/sessions/transcript-message-identity.js";
+import { findTranscriptEvent } from "../config/sessions/session-transcript-match.js";
 import { runWithoutOwnedSessionTranscriptWrites } from "../config/sessions/transcript-write-context.js";
 import { appendAssistantMessageToSessionTranscript } from "../config/sessions/transcript.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -116,44 +115,44 @@ export async function createUpdateRunNotifier(
             error.message.includes(deliveryIntentId)
           ) {
             try {
-              const events = await loadTranscriptEvents({
-                agentId: internal.agentId,
-                sessionId: internal.entry.sessionId,
-                storePath: internal.storePath,
-              });
-              const stored = events.find((event) => {
-                const msg = (event as Record<string, unknown>)?.message;
-                return readMessageIdempotencyKey(msg) === deliveryIntentId;
-              });
-              const storedText = Array.isArray(
-                (stored as Record<string, unknown> | undefined)?.message,
-              )
-                ? ""
-                : (((
-                    (
-                      (stored as Record<string, unknown> | undefined)?.message as Record<
-                        string,
-                        unknown
+              // Worker-backed keyed lookup (P2: avoids synchronous
+              // full-transcript SQLite read on the Gateway thread).
+              const found = await findTranscriptEvent(
+                {
+                  agentId: internal.agentId,
+                  sessionKey: internal.canonicalKey,
+                  sessionId: internal.entry.sessionId,
+                  ...(internal.storePath ? { storePath: internal.storePath } : {}),
+                },
+                { kind: "idempotency", key: deliveryIntentId },
+              );
+              const storedText =
+                (found?.event?.message as Record<string, unknown> | undefined)?.content != null
+                  ? (((
+                      (found!.event!.message as Record<string, unknown>).content as Array<
+                        Record<string, unknown>
                       >
-                    )?.content as Array<Record<string, unknown>> | undefined
-                  )?.find((b) => b.type === "text")?.text as string | undefined) ?? "");
-              // Require the stored content to be tied to THIS specific run.
-              // Generic keywords ("gateway", "OpenClaw") are insufficient:
-              // an unrelated message containing those words must not set
-              // noticeDelivered and suppress the actual completion report.
-              const isOurFinishedReport = storedText.includes(run.runId);
-              if (isOurFinishedReport) {
+                    ).find((b) => b.type === "text")?.text as string | undefined) ?? "")
+                  : "";
+              // Recognize production finished-report output (P1: the renderer
+              // never embeds run.runId; it produces headlines like
+              // "✅ OpenClaw updated to …", "⚠️ OpenClaw update failed: …",
+              // "ℹ️ OpenClaw update skipped: …", "↩️ OpenClaw update rolled back").
+              const isFinishedReport = /OpenClaw (updated|update|abandoned update)/.test(
+                storedText,
+              );
+              if (isFinishedReport) {
                 log.info(
-                  `update run notice already delivered (verified stored content for key ${deliveryIntentId})`,
+                  `update run notice already delivered (verified stored finished report for key ${deliveryIntentId})`,
                 );
                 return { ok: true as const };
               }
               log.warn(
-                `update run notice conflict for key ${deliveryIntentId} but stored content is not a recognized update-run notice; not marking as delivered`,
+                `update run notice conflict for key ${deliveryIntentId} but stored content is not a recognized update-run finished report; not marking as delivered`,
               );
               return {
                 ok: false as const,
-                reason: "conflicting stored content is not an update-run notice",
+                reason: "conflicting stored content is not an update-run finished report",
               };
             } catch {
               // If we cannot read the transcript, fail closed.
