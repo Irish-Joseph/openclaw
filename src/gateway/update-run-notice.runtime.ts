@@ -137,16 +137,12 @@ export async function createUpdateRunNotifier(
                       >
                     )?.content as Array<Record<string, unknown>> | undefined
                   )?.find((b) => b.type === "text")?.text as string | undefined) ?? "");
-              // Verify the stored content is an update-run notice (contains the
-              // run ID or a known notice marker).
-              const isOurNotice =
-                storedText.includes(run.runId) ||
-                storedText.includes("⬆️") ||
-                storedText.includes("⏳") ||
-                storedText.includes("🔁") ||
-                storedText.includes("OpenClaw") ||
-                storedText.includes("gateway");
-              if (isOurNotice) {
+              // Require the stored content to be tied to THIS specific run.
+              // Generic keywords ("gateway", "OpenClaw") are insufficient:
+              // an unrelated message containing those words must not set
+              // noticeDelivered and suppress the actual completion report.
+              const isOurFinishedReport = storedText.includes(run.runId);
+              if (isOurFinishedReport) {
                 log.info(
                   `update run notice already delivered (verified stored content for key ${deliveryIntentId})`,
                 );
