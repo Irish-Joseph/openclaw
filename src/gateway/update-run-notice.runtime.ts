@@ -134,13 +134,13 @@ export async function createUpdateRunNotifier(
                       >
                     ).find((b) => b.type === "text")?.text as string | undefined) ?? "")
                   : "";
-              // Recognize production finished-report output (P1: the renderer
-              // never embeds run.runId; it produces headlines like
-              // "✅ OpenClaw updated to …", "⚠️ OpenClaw update failed: …",
-              // "ℹ️ OpenClaw update skipped: …", "↩️ OpenClaw update rolled back").
-              const isFinishedReport = /OpenClaw (updated|update|abandoned update)/.test(
-                storedText,
-              );
+              // Recognize production terminal headlines (P1: anchored to the
+              // exact patterns renderUpdateRunReport produces for finished runs).
+              // Covers: ✅ updated, ⚠️ failed, ℹ️ skipped/abandoned/reconciled,
+              // ↩️ rolled back, ℹ️ <v> installed; Gateway … unverified.
+              const TERMINAL_HEADLINE =
+                /^(✅ OpenClaw updated|⚠️ OpenClaw update failed|ℹ️ OpenClaw (?:update (?:skipped|abandoned)|abandoned update reconciled|\S+ installed; Gateway)|↩️ OpenClaw update rolled back)/;
+              const isFinishedReport = TERMINAL_HEADLINE.test(storedText);
               if (isFinishedReport) {
                 log.info(
                   `update run notice already delivered (verified stored finished report for key ${deliveryIntentId})`,
