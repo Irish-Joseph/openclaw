@@ -10,6 +10,7 @@ import type {
   WorkerSessionPlacementStore,
 } from "./placement-store.js";
 import type { WorkerEnvironmentService } from "./service.js";
+import { WorkerTunnelOwnerDisconnectedError } from "./tunnel-contract.js";
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
@@ -201,7 +202,11 @@ export function createWorkerPlacementDiskSpaceMonitor(params: {
       limit: DISK_SPACE_PROBE_CONCURRENCY,
       onTaskError: (error, index) => {
         const placement = active[index];
-        if (placement && error instanceof StaleWorkerBuildError) {
+        if (
+          placement &&
+          (error instanceof StaleWorkerBuildError ||
+            error instanceof WorkerTunnelOwnerDisconnectedError)
+        ) {
           staleBindings.set(placement.sessionId, { ...placement });
         }
         params.warn(

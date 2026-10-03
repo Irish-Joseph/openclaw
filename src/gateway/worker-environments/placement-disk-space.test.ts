@@ -5,7 +5,11 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { StaleWorkerBuildError } from "./admission.js";
 import { createWorkerPlacementDiskSpaceMonitor } from "./placement-disk-space.js";
 import type { WorkerSessionPlacementRecord } from "./placement-store.js";
-import type { WorkerTunnelRequest, WorkerWorkspaceCommand } from "./tunnel-contract.js";
+import {
+  WorkerTunnelOwnerDisconnectedError,
+  type WorkerTunnelRequest,
+  type WorkerWorkspaceCommand,
+} from "./tunnel-contract.js";
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
@@ -226,6 +230,38 @@ describe("active worker placement disk-space monitoring", () => {
     await harness.monitor.sweep();
     await harness.monitor.sweep();
 
+    expect(harness.warn).toHaveBeenCalledTimes(2);
+    expect(harness.startTunnel).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops retrying when the worker node is disconnected (no supervisor dialect)", async () => {
+    const harness = createHarness(async () => result(6 * GIB, 10 * GIB));
+    harness.startTunnel.mockRejectedValue(
+      new WorkerTunnelOwnerDisconnectedError(
+        "device worker node is not connected with the supervisor dialect",
+      ),
+    );
+
+    // First sweep: probe fails, binding marked stale, one warning
+    await harness.monitor.sweep();
+    expect(harness.warn).toHaveBeenCalledTimes(1);
+    expect(harness.startTunnel).toHaveBeenCalledTimes(1);
+
+    // Second and third sweeps: stale binding skips the probe, no new warnings
+    await harness.monitor.sweep();
+    await harness.monitor.sweep();
+    expect(harness.warn).toHaveBeenCalledTimes(1);
+    expect(harness.startTunnel).toHaveBeenCalledTimes(1);
+
+    // Placement binding changes (node reconnects): stale binding cleared, probe resumes
+    harness.setPlacement(activePlacement({ generation: 4, activeOwnerEpoch: 8 }));
+    await harness.monitor.sweep();
+    expect(harness.warn).toHaveBeenCalledTimes(2);
+    expect(harness.startTunnel).toHaveBeenCalledTimes(2);
+
+    // Again stale: no further retries
+    await harness.monitor.sweep();
+    await harness.monitor.sweep();
     expect(harness.warn).toHaveBeenCalledTimes(2);
     expect(harness.startTunnel).toHaveBeenCalledTimes(2);
   });
