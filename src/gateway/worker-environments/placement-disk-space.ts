@@ -16,6 +16,7 @@ const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 const DISK_SPACE_PROBE_CONCURRENCY = 8;
 const DISK_SPACE_PROBE_TIMEOUT_MS = 30_000;
+const DISCONNECT_BACKOFF_MS = 5 * 60_000;
 
 const REMOTE_DISK_SPACE_PROBE_JS = String.raw`
 const fs = require("node:fs");
@@ -114,6 +115,7 @@ export function createWorkerPlacementDiskSpaceMonitor(params: {
 }) {
   const observations = new Map<string, DiskSpaceObservation>();
   const staleBindings = new Map<string, PlacementBinding>();
+  const disconnectedAt = new Map<string, number>();
   const now = params.now ?? Date.now;
   let observationVersion = 0;
 
@@ -128,6 +130,13 @@ export function createWorkerPlacementDiskSpaceMonitor(params: {
     // A stale worker build cannot recover until its placement binding changes.
     const stale = staleBindings.get(placement.sessionId);
     if (stale && hasExactBinding(stale, placement)) {
+      return;
+    }
+    // A disconnected node may reconnect without a binding change. Back off
+    // instead of retrying every sweep to avoid log noise, but resume probing
+    // after the backoff expires (catches reconnection on the same placement).
+    const lastDisconnect = disconnectedAt.get(placement.sessionId);
+    if (lastDisconnect !== undefined && now() - lastDisconnect < DISCONNECT_BACKOFF_MS) {
       return;
     }
     const tunnel = await params.environments.startTunnel({
@@ -196,18 +205,23 @@ export function createWorkerPlacementDiskSpaceMonitor(params: {
         staleBindings.delete(sessionId);
       }
     }
+    // Expire old disconnect backoff entries for placements that no longer exist.
+    for (const [sessionId] of disconnectedAt) {
+      if (!params.placements.get(sessionId)) {
+        disconnectedAt.delete(sessionId);
+      }
+    }
     const tasks = active.map((placement) => () => probe(placement));
     await runTasksWithConcurrency({
       tasks,
       limit: DISK_SPACE_PROBE_CONCURRENCY,
       onTaskError: (error, index) => {
         const placement = active[index];
-        if (
-          placement &&
-          (error instanceof StaleWorkerBuildError ||
-            error instanceof WorkerTunnelOwnerDisconnectedError)
-        ) {
+        if (placement && error instanceof StaleWorkerBuildError) {
           staleBindings.set(placement.sessionId, { ...placement });
+        }
+        if (placement && error instanceof WorkerTunnelOwnerDisconnectedError) {
+          disconnectedAt.set(placement.sessionId, now());
         }
         params.warn(
           `Worker disk-space probe failed${placement ? ` (${placement.sessionId})` : ""}: ${formatErrorMessage(error)}`,

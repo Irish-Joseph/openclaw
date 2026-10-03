@@ -107,6 +107,58 @@ function createHarness(
   };
 }
 
+function createHarnessWithClock(
+  runWorkspaceCommand: (command: WorkerWorkspaceCommand) => Promise<SpawnResult>,
+  now: () => number,
+) {
+  let placement: WorkerSessionPlacementRecord = activePlacement();
+  const unexpected = async () => {
+    throw new Error("unexpected workspace mutation during a disk probe");
+  };
+  const startTunnel = vi.fn(async ({ environmentId, ownerEpoch }: WorkerTunnelRequest) => ({
+    environmentId,
+    ownerEpoch,
+    runWorkspaceCommand,
+    quiesceWorkspace: unexpected,
+    syncWorkspace: unexpected,
+    reconcileWorkspace: unexpected,
+    stop: async () => {},
+  }));
+  const warn = vi.fn();
+  const monitor = createWorkerPlacementDiskSpaceMonitor({
+    placements: {
+      get: () => placement,
+      readChangeSnapshot: async () => {
+        const { sessionId, sessionKey, agentId, state, generation, updatedAtMs } = placement;
+        return [{ sessionId, sessionKey, agentId, state, generation, updatedAtMs }];
+      },
+      readProjection: async () => ({
+        placements: new Map([[placement.sessionId, placement]]),
+        moves: new Map(),
+        pendingResults: new Map(),
+        workspaceJournalOwnerSessionIds: new Set(),
+        workspaceResultReconcilingSessionIds: new Set(),
+        workspaceRecoveryPendingSessionIds: new Set(),
+        environments: new Map(),
+      }),
+    },
+    environments: { startTunnel },
+    warn,
+    now,
+  });
+  return {
+    monitor,
+    startTunnel,
+    warn,
+    get placement() {
+      return placement;
+    },
+    setPlacement(next: WorkerSessionPlacementRecord) {
+      placement = next;
+    },
+  };
+}
+
 describe("active worker placement disk-space monitoring", () => {
   it("samples an idle active placement and emits only projected status transitions", async () => {
     let availableBytes = 6 * GIB;
@@ -234,36 +286,56 @@ describe("active worker placement disk-space monitoring", () => {
     expect(harness.startTunnel).toHaveBeenCalledTimes(2);
   });
 
-  it("stops retrying when the worker node is disconnected (no supervisor dialect)", async () => {
-    const harness = createHarness(async () => result(6 * GIB, 10 * GIB));
-    harness.startTunnel.mockRejectedValue(
-      new WorkerTunnelOwnerDisconnectedError(
-        "device worker node is not connected with the supervisor dialect",
-      ),
+  it("backs off and resumes when the worker node disconnects then reconnects", async () => {
+    let fail = true;
+    let currentTime = 1_000;
+    const harness = createHarnessWithClock(
+      async () => result(6 * GIB, 10 * GIB),
+      () => currentTime,
     );
+    harness.startTunnel.mockImplementation(async ({ environmentId, ownerEpoch }) => {
+      if (fail) {
+        throw new WorkerTunnelOwnerDisconnectedError(
+          "device worker node is not connected with the supervisor dialect",
+        );
+      }
+      return {
+        environmentId,
+        ownerEpoch,
+        runWorkspaceCommand: async () => result(6 * GIB, 10 * GIB),
+        quiesceWorkspace: async () => {},
+        syncWorkspace: async () => {},
+        reconcileWorkspace: async () => {},
+        stop: async () => {},
+      };
+    });
 
-    // First sweep: probe fails, binding marked stale, one warning
+    // Sweep 1: probe fails with disconnect error, backoff starts, one warning
     await harness.monitor.sweep();
     expect(harness.warn).toHaveBeenCalledTimes(1);
     expect(harness.startTunnel).toHaveBeenCalledTimes(1);
 
-    // Second and third sweeps: stale binding skips the probe, no new warnings
-    await harness.monitor.sweep();
+    // Sweep 2 (t+60s, within 5min backoff): skipped, no warning
+    currentTime += 60_000;
     await harness.monitor.sweep();
     expect(harness.warn).toHaveBeenCalledTimes(1);
     expect(harness.startTunnel).toHaveBeenCalledTimes(1);
 
-    // Placement binding changes (node reconnects): stale binding cleared, probe resumes
-    harness.setPlacement(activePlacement({ generation: 4, activeOwnerEpoch: 8 }));
+    // Sweep 3 (t+120s, still within backoff): still skipped
+    currentTime += 60_000;
     await harness.monitor.sweep();
-    expect(harness.warn).toHaveBeenCalledTimes(2);
-    expect(harness.startTunnel).toHaveBeenCalledTimes(2);
+    expect(harness.warn).toHaveBeenCalledTimes(1);
+    expect(harness.startTunnel).toHaveBeenCalledTimes(1);
 
-    // Again stale: no further retries
+    // Node reconnects (fail=false), advance past 5min backoff
+    fail = false;
+    currentTime += 4 * 60_000; // total elapsed: 6min > 5min backoff
     await harness.monitor.sweep();
-    await harness.monitor.sweep();
-    expect(harness.warn).toHaveBeenCalledTimes(2);
-    expect(harness.startTunnel).toHaveBeenCalledTimes(2);
+    expect(harness.warn).toHaveBeenCalledTimes(1); // no new warning
+    expect(harness.startTunnel).toHaveBeenCalledTimes(2); // probe resumed
+
+    // Verify fresh sample was recorded
+    expect(harness.monitor.read(harness.placement)?.availableBytes).toBe(6 * GIB);
   });
 
   it("keeps the last exact-binding sample and warns on every failed advisory probe", async () => {
