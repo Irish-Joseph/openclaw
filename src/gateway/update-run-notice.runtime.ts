@@ -137,9 +137,9 @@ export async function createUpdateRunNotifier(
               // Recognize production terminal headlines (P1: anchored to the
               // exact patterns renderUpdateRunReport produces for finished runs).
               // Covers: ✅ updated, ⚠️ failed, ℹ️ skipped/abandoned/reconciled,
-              // ↩️ rolled back, ℹ️ <v> installed; Gateway … unverified.
+              // ↩️ rolled back, ℹ️ [v] installed; Gateway … unverified.
               const TERMINAL_HEADLINE =
-                /^(✅ OpenClaw updated|⚠️ OpenClaw update failed|ℹ️ OpenClaw (?:update (?:skipped|abandoned)|abandoned update reconciled|\S+ installed; Gateway)|↩️ OpenClaw update rolled back)/;
+                /^(✅ OpenClaw updated|⚠️ OpenClaw update failed|ℹ️ OpenClaw (?:update (?:skipped|abandoned)|abandoned update reconciled|(?:\S+ )?installed; Gateway)|↩️ OpenClaw update rolled back)/;
               const isFinishedReport = TERMINAL_HEADLINE.test(storedText);
               if (isFinishedReport) {
                 log.info(
