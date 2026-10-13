@@ -301,9 +301,11 @@ export async function recoverPendingSessionDeliveries(opts: {
         summary.skippedMaxRetries += 1;
         return "continue";
       }
-      if (result.status === "dead-lettered") {
+      if (result.status === "dead-lettered" && result.finalized) {
         // The entry already moved to the failed area; surface it so the
         // recovery result matches deliveries actually abandoned (#169807).
+        // Interrupted finalization is counted once, when the resumed
+        // cleanup finalizes below.
         summary.deadLettered += 1;
         opts.log.warn(`Session delivery ${currentEntry.id} was dead-lettered during recovery`);
         return "continue";
@@ -318,6 +320,11 @@ export async function recoverPendingSessionDeliveries(opts: {
       if (result.status === "recovered" && result.finalized) {
         summary.recovered += 1;
         opts.log.info(`Recovered session delivery ${currentEntry.id}`);
+      }
+      if (result.status === "moved-to-failed" && result.finalized) {
+        // Resumed dead-letter cleanup that completed in this pass (#169807).
+        summary.deadLettered += 1;
+        opts.log.warn(`Session delivery ${currentEntry.id} was dead-lettered during recovery`);
       }
       return "continue";
     },

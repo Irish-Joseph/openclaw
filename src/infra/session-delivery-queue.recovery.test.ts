@@ -176,13 +176,32 @@ describe("session-delivery queue recovery", () => {
       });
       const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
-      await recoverPendingSessionDeliveries({ deliver, onSettled, queueContext, log });
+      const firstPass = await recoverPendingSessionDeliveries({
+        deliver,
+        onSettled,
+        queueContext,
+        log,
+      });
+      // #169807: interrupted finalization is not reported yet; it must be
+      // counted once, when the resumed cleanup actually completes.
+      expect(firstPass.deadLettered).toBe(0);
+      expect(log.warn).not.toHaveBeenCalled();
       expect(deliver).toHaveBeenCalledTimes(1);
       expect(await loadPendingSessionDeliveries(queueContext)).toEqual([
         expect.objectContaining({ id, settlementOutcome: "moved-to-failed" }),
       ]);
 
-      await recoverPendingSessionDeliveries({ deliver, onSettled, queueContext, log });
+      const secondPass = await recoverPendingSessionDeliveries({
+        deliver,
+        onSettled,
+        queueContext,
+        log,
+      });
+      expect(secondPass.deadLettered).toBe(1);
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.stringContaining("dead-lettered during recovery"),
+      );
       expect(deliver).toHaveBeenCalledTimes(1);
       expect(onSettled).toHaveBeenCalledTimes(2);
       expect(await loadPendingSessionDeliveries(queueContext)).toEqual([]);
