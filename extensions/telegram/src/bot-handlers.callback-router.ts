@@ -76,6 +76,7 @@ import {
   parseTelegramQuestionCallbackData,
 } from "./question-callback-data.js";
 import { buildInlineKeyboard } from "./send.js";
+import { readTelegramUpdateReceivedAtMs } from "./telegram-ingress-spool.payload.js";
 import { buildTelegramConversationId } from "./topic-conversation.js";
 
 export function createTelegramCallbackRouter({
@@ -616,9 +617,10 @@ export function createTelegramCallbackRouter({
         base: withResolvedTelegramForumFlag(callbackMessage, isForum),
         from: callback.from,
         text: callbackCommandText,
-        // A callback_query carries no timestamp of its own; stamp the tap time,
-        // not the date of the card that carries the button (#169881).
-        date: Math.floor(Date.now() / 1000),
+        // A callback_query carries no timestamp of its own. Prefer the spool's
+        // receipt time for queued or replayed callbacks and the processing time
+        // otherwise; never the date of the card that carries the button (#169881).
+        date: Math.floor((readTelegramUpdateReceivedAtMs(ctx.update) ?? Date.now()) / 1000),
       });
       const syntheticCtx = buildSyntheticContext(ctx, syntheticMessage);
       await processMessageWithReplyChain({

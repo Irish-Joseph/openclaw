@@ -39,6 +39,7 @@ import { resolveTelegramUpdateId, telegramQueueEventId } from "./telegram-ingres
 import {
   TelegramIngressPayloadError,
   TELEGRAM_SPOOLED_UPDATE_PAYLOAD_VERSION,
+  withTelegramUpdateReceivedAt,
   type TelegramSpooledUpdatePayload,
 } from "./telegram-ingress-spool.payload.js";
 import { createShouldSupersedeTelegramSpooledPending } from "./telegram-ingress-supersede.js";
@@ -351,7 +352,11 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
         if (payload.preparedPollAnswer && typeof update === "object" && update !== null) {
           recordPreparedTelegramPollAnswer(update, payload.preparedPollAnswer);
         }
-        return update;
+        // Handlers need the receipt time, not the (possibly later) dispatch time.
+        return withTelegramUpdateReceivedAt(
+          (update as object | undefined) ?? null,
+          payload.receivedAt,
+        );
       },
       encode: ({ body }) => body,
       decode: (payload) => ({ version: payload.version, body: payload }),
