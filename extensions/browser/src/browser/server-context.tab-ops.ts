@@ -418,6 +418,7 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
             ...(profile.engine ? { engine: profile.engine } : {}),
             url,
             cdpPolicy,
+            ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
             ...(opts?.signal ? { signal: opts.signal } : {}),
             ...ssrfPolicyOpts,
           });

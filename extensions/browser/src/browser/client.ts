@@ -246,6 +246,7 @@ export async function browserOpenTab(
     {
       url,
       ...(opts?.label ? { label: opts.label } : {}),
+      ...(typeof opts?.timeoutMs === "number" ? { timeoutMs: opts.timeoutMs } : {}),
       ...(opts?.managedOnly ? { managedOnly: true } : {}),
     },
     browserClientTimeout(baseUrl, opts?.timeoutMs, 15000),

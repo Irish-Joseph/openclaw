@@ -223,6 +223,59 @@ it("does not open a dashboard tab after its owner disappears during browser star
   expect(profileCtx.openTab).not.toHaveBeenCalled();
 });
 
+it("forwards a bounded open navigation budget to the tab opener", async () => {
+  const profileCtx = createProfileContext();
+  const response = await callTabsRoute({
+    method: "post",
+    path: "/tabs/open",
+    body: { url: "https://example.com", timeoutMs: 90_000 },
+    profileCtx,
+  });
+  expect(response.statusCode).toBe(200);
+  expect(profileCtx.openTab).toHaveBeenCalledWith(
+    "https://example.com",
+    expect.objectContaining({ timeoutMs: 90_000 }),
+  );
+});
+
+it("caps the open navigation budget at the navigation ceiling", async () => {
+  const profileCtx = createProfileContext();
+  await callTabsRoute({
+    method: "post",
+    path: "/tabs/open",
+    body: { url: "https://example.com", timeoutMs: 900_000 },
+    profileCtx,
+  });
+  expect(profileCtx.openTab).toHaveBeenCalledWith(
+    "https://example.com",
+    expect.objectContaining({ timeoutMs: 120_000 }),
+  );
+});
+
+it("rejects an unparseable open navigation budget", async () => {
+  const profileCtx = createProfileContext();
+  const response = await callTabsRoute({
+    method: "post",
+    path: "/tabs/open",
+    body: { url: "https://example.com", timeoutMs: "soon" },
+    profileCtx,
+  });
+  expect(response.statusCode).toBe(400);
+  expect(profileCtx.openTab).not.toHaveBeenCalled();
+});
+
+it("keeps the fixed open navigation budget when none is requested", async () => {
+  const profileCtx = createProfileContext();
+  await callTabsRoute({
+    method: "post",
+    path: "/tabs/open",
+    body: { url: "https://example.com" },
+    profileCtx,
+  });
+  expect(profileCtx.openTab).toHaveBeenCalledTimes(1);
+  expect(profileCtx.openTab.mock.calls[0]?.[1]).not.toHaveProperty("timeoutMs");
+});
+
 it("returns the profile that actually handled tab open", async () => {
   const profileCtx = createProfileContext({
     profile: { name: "hot-profile" },

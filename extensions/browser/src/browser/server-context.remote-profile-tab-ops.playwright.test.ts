@@ -126,6 +126,39 @@ describe("browser remote profile tab ops via Playwright", () => {
     );
   });
 
+  it("forwards a caller-supplied open navigation deadline to page creation", async () => {
+    const listPagesViaPlaywright = vi.fn(async () => [
+      { targetId: "T1", title: "Tab 1", url: "https://example.com", type: "page" },
+    ]);
+    const createPageViaPlaywright = vi.fn(async () => ({
+      targetId: "T2",
+      title: "Tab 2",
+      url: "http://127.0.0.1:3000",
+      type: "page",
+    }));
+    vi.spyOn(deps.pwAiModule, "getPwAiModule").mockResolvedValue({
+      listPagesViaPlaywright,
+      createPageViaPlaywright,
+    } as unknown as Awaited<ReturnType<typeof deps.pwAiModule.getPwAiModule>>);
+    const fetchMock = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          json: async () => ({
+            webSocketDebuggerUrl:
+              "wss://1.1.1.1:9222/devtools/browser/REMOTE-BROWSER?auth=fixture-value",
+          }),
+        }) as unknown as Response,
+    );
+    const { remote } = deps.createRemoteRouteHarness(fetchMock);
+
+    await remote.openTab("http://127.0.0.1:3000", { timeoutMs: 90_000 });
+
+    expect(createPageViaPlaywright).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 90_000 }),
+    );
+  });
+
   it("preserves ownership cancellation when closing the exact created page fails", async () => {
     const close = vi.fn(async () => {
       throw new Error("created page close failed");

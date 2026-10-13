@@ -504,6 +504,8 @@ export async function createPageViaPlaywright(
     signal?: AbortSignal;
     /** Caller authority is checked at each effect boundary, independently of cancellation. */
     assertCurrent?: () => void;
+    /** Budget for the initial goto; falls back to the fixed 30 s navigation budget. */
+    timeoutMs?: number;
     /** Own an empty context; never reuse profile cookies for a session-scoped dashboard. */
     isolatedContext?: true;
   } & BrowserNavigationPolicyOptions,
@@ -574,7 +576,7 @@ export async function createPageViaPlaywright(
           cdpUrl: opts.cdpUrl,
           page,
           url: targetUrl,
-          timeoutMs: 30_000,
+          timeoutMs: opts.timeoutMs ?? 30_000,
           ...navigationPolicy,
           targetId: createdTargetId ?? undefined,
           assertPageCurrent: assertCurrent,

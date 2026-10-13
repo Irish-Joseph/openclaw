@@ -491,6 +491,28 @@ describe("browser client", () => {
     expect(init?.body).toBeUndefined();
   });
 
+  it("forwards an explicit open navigation budget in the tab-open body", async () => {
+    const calls: Array<{ url: string; init?: RequestInit & { timeoutMs?: number } }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit & { timeoutMs?: number }) => {
+        calls.push({ url, init });
+        return jsonResponse({ targetId: "t2", title: "N", url: "https://y" });
+      }),
+    );
+
+    await browserOpenTab("http://127.0.0.1:18791", "https://example.com", { timeoutMs: 60_000 });
+    await browserOpenTab("http://127.0.0.1:18791", "https://example.com");
+
+    const openBodies = calls
+      .filter((call) => call.url.endsWith("/tabs/open"))
+      .map((call) => JSON.parse(String(call.init?.body)) as { url: string; timeoutMs?: number });
+    expect(openBodies).toEqual([
+      { url: "https://example.com", timeoutMs: 60_000 },
+      { url: "https://example.com" },
+    ]);
+  });
+
   it("gives browser act requests enough client timeout for long waits", async () => {
     const calls: Array<{ url: string; init?: RequestInit & { timeoutMs?: number } }> = [];
     vi.stubGlobal(

@@ -590,7 +590,8 @@ it.each(["host fallback", "failed rollback"] as const)(
         });
         expect(runtime.fetchBrowserJson).toHaveBeenLastCalledWith("/tabs/open?profile=work", {
           method: "POST",
-          body: JSON.stringify({ url: opened.url }),
+          // #169944: the requested tool budget is forwarded as the open navigation budget.
+          body: JSON.stringify({ url: opened.url, timeoutMs: 60_000 }),
           timeoutMs: 60_000,
           signal: controller.signal,
         });

@@ -252,6 +252,14 @@ afterEach(async () => {
 });
 
 describe("pw-session createPageViaPlaywright navigation guard", () => {
+  it("keeps the fixed navigation budget unless a budget is requested", async () => {
+    await create();
+    expect(f.pageGoto).toHaveBeenCalledWith(publicUrl, { timeout: 30_000 });
+  });
+  it("uses the requested navigation budget for the initial open goto", async () => {
+    await create({ timeoutMs: 45_000 });
+    expect(f.pageGoto).toHaveBeenCalledWith(publicUrl, { timeout: 45_000 });
+  });
   it("blocks hostname navigation when strict SSRF policy is configured", async () => {
     getChromeWebSocketEndpointSpy.mockResolvedValue({
       url: "ws://127.0.0.1:18792/devtools/browser/ROOT",
