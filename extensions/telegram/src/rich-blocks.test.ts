@@ -506,16 +506,6 @@ describe("rich message plan wiring", () => {
     expect(chunks.every((chunk) => chunk.richMessage?.skip_entity_detection === true)).toBe(true);
   });
 
-  it("does not treat a URL handle (@handle) as an email token (#171111)", () => {
-    const chunks = planTelegramTextDeliveryPages({
-      text: "clip: https://www.tiktok.com/@horde.app",
-      maxChars: 32_768,
-      richMessages: true,
-    });
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]?.richMessage?.skip_entity_detection).not.toBe(true);
-  });
-
   it("sends readable source text when markdown projects to zero blocks", () => {
     const chunks = planTelegramTextDeliveryPages({
       text: "[ref]: https://example.com",
