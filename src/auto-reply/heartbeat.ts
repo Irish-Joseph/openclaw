@@ -96,6 +96,25 @@ export function resolveHeartbeatPromptForResponseTool(raw?: string): string {
 
 type StripHeartbeatMode = "heartbeat" | "message";
 const HEARTBEAT_TRAILING_TOKEN_RE = new RegExp(`${escapeRegExp(HEARTBEAT_TOKEN)}[^\\w]{0,4}$`);
+// Models occasionally truncate the silent token mid-word (Gemini replying "no_r").
+// isSilentReplyPayloadText already accepts truncations that keep the "NO_" prefix;
+// complete the match for truncations cut before the underscore. Accept only on
+// heartbeat paths, where a bare short reply is never an alert, and require
+// enough characters that ordinary words (e.g. "No") do not qualify.
+const MIN_TRUNCATED_SILENT_REPLY_CHARS = 4;
+function isTruncatedSilentReplyText(text: string | undefined): boolean {
+  const trimmed = normalizeOptionalString(text);
+  if (!trimmed) {
+    return false;
+  }
+  const candidate = trimmed.toUpperCase();
+  const token = SILENT_REPLY_TOKEN.toUpperCase();
+  return (
+    candidate.length >= MIN_TRUNCATED_SILENT_REPLY_CHARS &&
+    candidate.length < token.length &&
+    token.startsWith(candidate)
+  );
+}
 
 function stripTokenAtEdges(raw: string): { text: string; didStrip: boolean } {
   let text = raw.trim();
@@ -144,12 +163,15 @@ export function stripHeartbeatToken(
   if (!trimmed) {
     return { shouldSkip: true, text: "", didStrip: false };
   }
+  const mode: StripHeartbeatMode = opts.mode ?? "message";
+  if (mode === "heartbeat" && isTruncatedSilentReplyText(trimmed)) {
+    return { shouldSkip: true, text: "", didStrip: true };
+  }
   // Markup cleanup inserts spaces or removes edge wrappers; it cannot create this token.
   if (!trimmed.includes(HEARTBEAT_TOKEN)) {
     return { shouldSkip: false, text: trimmed, didStrip: false };
   }
 
-  const mode: StripHeartbeatMode = opts.mode ?? "message";
   const maxAckCharsRaw = opts.maxAckChars;
   const maxAckChars = Math.max(
     0,
