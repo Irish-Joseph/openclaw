@@ -570,17 +570,24 @@ describe("session-delivery queue recovery", () => {
       );
 
       const onSettled = vi.fn(async () => undefined);
+      const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
       const summary = await recoverPendingSessionDeliveries({
         deliver: vi.fn(async () => {
           throw new SessionDeliveryDeadLetteredError("ambiguous side effects");
         }),
         onSettled,
         queueContext,
-        log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        log,
       });
 
+      // #169807: a dead-lettered entry is abandoned, not recovered or retry-
+      // failed; the summary and the log must both say so.
       expect(summary.recovered).toBe(0);
       expect(summary.failed).toBe(0);
+      expect(summary.deadLettered).toBe(1);
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.stringContaining("dead-lettered during recovery"),
+      );
       expect(onSettled).toHaveBeenCalledWith(
         expect.objectContaining({ id }),
         "moved-to-failed",

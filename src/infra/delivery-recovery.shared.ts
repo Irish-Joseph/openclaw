@@ -36,6 +36,7 @@ export type DeliveryRecoverySummary = {
   failed: number;
   skippedMaxRetries: number;
   deferredBackoff: number;
+  deadLettered: number;
 };
 
 export type DeliveryRecoveryDrainDecision = {
@@ -66,7 +67,7 @@ type DeliveryRecoveryScanOptions<T extends DeliveryRecoveryEntry> = {
 };
 
 export function createEmptyDeliveryRecoverySummary(): DeliveryRecoverySummary {
-  return { recovered: 0, failed: 0, skippedMaxRetries: 0, deferredBackoff: 0 };
+  return { recovered: 0, failed: 0, skippedMaxRetries: 0, deferredBackoff: 0, deadLettered: 0 };
 }
 
 export function resolveDeliveryRecoveryDeadlineMs(maxRecoveryMs: number | undefined): number {

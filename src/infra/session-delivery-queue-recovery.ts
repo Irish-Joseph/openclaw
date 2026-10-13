@@ -144,6 +144,7 @@ async function processPendingSessionDelivery(opts: {
   }
 
   let result: SessionDeliverySettledOutcome;
+  let deadLettered = false;
   try {
     context.queueContext.admission.assertCurrent();
     await context.deliver(entry, { queueContext: context.queueContext });
@@ -162,6 +163,7 @@ async function processPendingSessionDelivery(opts: {
         throw markError;
       }
       result = "moved-to-failed";
+      deadLettered = true;
     } else if (
       err instanceof SessionDeliveryDeferredError ||
       err instanceof SessionDeliveryAcknowledgementFinalizeError ||
@@ -194,7 +196,7 @@ async function processPendingSessionDelivery(opts: {
     entry,
     outcome: result,
   });
-  return { status: result, finalized };
+  return { status: deadLettered ? "dead-lettered" : result, finalized };
 }
 
 async function processDrainedSessionDelivery(
@@ -297,6 +299,13 @@ export async function recoverPendingSessionDeliveries(opts: {
       });
       if (result.status === "max-retries") {
         summary.skippedMaxRetries += 1;
+        return "continue";
+      }
+      if (result.status === "dead-lettered") {
+        // The entry already moved to the failed area; surface it so the
+        // recovery result matches deliveries actually abandoned (#169807).
+        summary.deadLettered += 1;
+        opts.log.warn(`Session delivery ${currentEntry.id} was dead-lettered during recovery`);
         return "continue";
       }
       if (result.status === "backoff") {
