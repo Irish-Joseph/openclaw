@@ -616,6 +616,9 @@ export function createTelegramCallbackRouter({
         base: withResolvedTelegramForumFlag(callbackMessage, isForum),
         from: callback.from,
         text: callbackCommandText,
+        // A callback_query carries no timestamp of its own; stamp the tap time,
+        // not the date of the card that carries the button (#169881).
+        date: Math.floor(Date.now() / 1000),
       });
       const syntheticCtx = buildSyntheticContext(ctx, syntheticMessage);
       await processMessageWithReplyChain({
