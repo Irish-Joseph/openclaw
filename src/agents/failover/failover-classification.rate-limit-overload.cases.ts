@@ -156,6 +156,15 @@ export const rateLimitOverloadCases = [
           "OpenAI API error (429): RESOURCE_EXHAUSTED: Quota exceeded for requests per minute; please retry your request",
       },
     ],
+    // #170388: mid-message parenthesized 429 now classifies as rate limiting.
+    [
+      "retry-gemini-parenthesized-429",
+      {
+        provider: "google",
+        message:
+          "Google Generative AI API error (429): Resource exhausted. [code=RESOURCE_EXHAUSTED]",
+      },
+    ],
   ]),
   {
     id: "openrouter-stream-rate-limit",

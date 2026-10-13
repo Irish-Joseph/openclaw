@@ -21,11 +21,22 @@ const PRESERVED_NOT_FOUND_OR_GONE_REASONS = new Set<FailoverReason | null>([
 function stripErrorPrefix(raw: string): string {
   return raw.replace(/^error:\s*/i, "").trim();
 }
+// Some providers (e.g. Gemini) embed the HTTP status parenthesized mid-message
+// ("... API error (503): ...") instead of leading it. Fall back to the first
+// parenthesized 4xx/5xx anywhere in the message; the 400-599 bound keeps
+// innocuous parenthesized numbers such as "(200)" out of the signal.
+const EMBEDDED_HTTP_STATUS_RE = /\((4\d\d|5\d\d)\)/;
 export function inferSignalStatus(signal: FailoverSignal): number | undefined {
   if (typeof signal.status === "number" && Number.isFinite(signal.status)) {
     return signal.status;
   }
-  return extractLeadingHttpStatus(stripErrorPrefix(signal.message?.trim() ?? ""))?.code;
+  const message = signal.message?.trim() ?? "";
+  const leadingStatus = extractLeadingHttpStatus(stripErrorPrefix(message))?.code;
+  if (leadingStatus !== undefined) {
+    return leadingStatus;
+  }
+  const embeddedStatus = message.match(EMBEDDED_HTTP_STATUS_RE)?.[1];
+  return embeddedStatus ? Number(embeddedStatus) : undefined;
 }
 function isExplicitNoBodyHttpMessage(raw: string | undefined, status?: number): boolean {
   const trimmed = raw?.trim();

@@ -216,7 +216,19 @@ export const overflowServerMiscCases = [
       message:
         "OpenAI API error (500): 500 The server had an error while processing your request. Sorry about that!",
     },
-    expected: null,
+    // #170388: was null, now server_error (mid-message parenthesized 500 is a failover signal)
+    expected: reason("server_error"),
+  },
+  {
+    id: "retry-gemini-parenthesized-503",
+    source: retrySource,
+    signal: {
+      provider: "google",
+      message:
+        "Google Generative AI API error (503): The service is currently unavailable. [code=UNAVAILABLE]",
+    },
+    // #170388
+    expected: reason("server_error"),
   },
   {
     id: "retry-azure-502",

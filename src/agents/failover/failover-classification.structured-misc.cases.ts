@@ -39,6 +39,14 @@ export const structuredMiscCases = [
       message:
         "Google Generative AI API error (400): Request contains an invalid argument. [code=INVALID_ARGUMENT]",
     },
+    // #170388: was null, now format (mid-message parenthesized 400 maps through the HTTP policy)
+    expected: reason("format"),
+  },
+  {
+    id: "matches-google-non-error-parenthesis",
+    source: matchesSource,
+    signal: { message: "request (200) processed" },
+    // #170388: parenthesized non-4xx/5xx numbers are not HTTP status signals.
     expected: null,
   },
   {
