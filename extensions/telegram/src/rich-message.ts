@@ -38,8 +38,12 @@ export type TelegramRichMessageContextParams = Pick<
   "disable_notification" | "direct_messages_topic_id" | "message_thread_id" | "reply_parameters"
 >;
 
+// A left boundary keeps URL handles such as https://www.tiktok.com/@horde.app
+// from tripping the email guard for the whole reply (#171111). An unquoted
+// email local part cannot carry `/`, so URL paths never form one; scheme
+// prefixes such as `openai:` or `mailto:` still keep their guard.
 const TELEGRAM_RICH_EMAIL_TOKEN_RE =
-  /[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+/iu;
+  /(?<![\w.~/%-])[A-Z0-9.!#$%&'*+=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+/iu;
 
 function shouldSkipTelegramRichEntityDetection(
   text: string,
