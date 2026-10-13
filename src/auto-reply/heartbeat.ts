@@ -102,7 +102,7 @@ const HEARTBEAT_TRAILING_TOKEN_RE = new RegExp(`${escapeRegExp(HEARTBEAT_TOKEN)}
 // heartbeat paths, where a bare short reply is never an alert, and require
 // enough characters that ordinary words (e.g. "No") do not qualify.
 const MIN_TRUNCATED_SILENT_REPLY_CHARS = 4;
-function isTruncatedSilentReplyText(text: string | undefined): boolean {
+export function isTruncatedHeartbeatSilentReplyText(text: string | undefined): boolean {
   const trimmed = normalizeOptionalString(text);
   if (!trimmed) {
     return false;
