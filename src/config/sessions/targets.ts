@@ -1,11 +1,18 @@
 import fsSync from "node:fs";
 import path from "node:path";
-import { resolveAgentDir, resolveConfiguredAgentId } from "../../agents/agent-scope-config.js";
-import { listAgentIds, resolveDefaultAgentId } from "../../agents/agent-scope.js";
+import {
+  listAgentIds,
+  resolveAgentDir,
+  resolveConfiguredAgentId,
+  resolveDefaultAgentId,
+} from "../../agents/agent-scope-config.js";
 import { resolveAgentSessionDirsFromAgentsDirSync } from "../../agents/session-dirs.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
-import { createOpenClawAgentDatabasePathMatcher } from "../../state/openclaw-agent-db.paths.js";
+import {
+  createOpenClawAgentDatabasePathMatcher,
+  isSameOpenClawAgentDatabasePath,
+} from "../../state/openclaw-agent-db.paths.js";
 import {
   resolveSessionStoreCompatibilityAgentId,
   tryResolveLegacyCompatibilityAgentId,
@@ -159,24 +166,34 @@ export function listKnownSessionStoreAgentIds(
 
 function resolveSessionStoreDiscoveryState(
   cfg: OpenClawConfig,
-  env: NodeJS.ProcessEnv,
-  registeredDatabases?: SessionStoreRegistryRead,
-  readCandidates?: readonly SessionStoreReadCandidate[],
-  readPaths?: CapturedSessionStorePaths,
+  params: SessionStoreTargetReadOptions & {
+    agentIds?: ReadonlySet<string>;
+    fixedStoreAgentIds?: ReadonlySet<string>;
+  },
 ): {
   configuredTargets: SessionStoreTarget[];
   agentsRoots: string[];
 } {
-  const configuredTargets = resolveSessionStoreTargets(
-    cfg,
-    { allAgents: true },
-    {
-      env,
-      registeredDatabases,
-      readCandidates,
-      readPaths,
-    },
-  );
+  const env = params.env ?? process.env;
+  const agentIds = params.agentIds;
+  const configuredTargets = agentIds
+    ? resolveConfiguredSessionStoreTargets(cfg, env, params.readPaths)
+    : resolveSessionStoreTargets(cfg, { allAgents: true }, params);
+  if (!isPerAgentSessionStoreConfig(cfg.session?.store)) {
+    for (const agentId of params.fixedStoreAgentIds ?? []) {
+      if (!isConfiguredSessionStoreAgentId(cfg, agentId)) {
+        configuredTargets.push({
+          agentId,
+          storePath: resolveCapturedSessionStorePath(
+            cfg.session?.store,
+            agentId,
+            env,
+            params.readPaths,
+          ),
+        });
+      }
+    }
+  }
   const agentsRoots = new Set<string>();
   for (const target of configuredTargets) {
     const agentsDir = resolveAgentsDirFromSessionStorePath(target.storePath);
@@ -188,7 +205,9 @@ function resolveSessionStoreDiscoveryState(
   // Search both configured template roots and the default state root so retired/manual agents are
   // visible even when no longer listed in config.
   return {
-    configuredTargets,
+    configuredTargets: agentIds
+      ? configuredTargets.filter((target) => agentIds.has(target.agentId))
+      : configuredTargets,
     agentsRoots: [...agentsRoots],
   };
 }
@@ -198,7 +217,11 @@ export function resolveAllAgentSessionStoreTargetsSync(
   cfg: OpenClawConfig,
   params: {
     env?: NodeJS.ProcessEnv;
+    agentIds?: ReadonlySet<string>;
+    fixedStoreAgentIds?: ReadonlySet<string>;
     registeredDatabases?: SessionStoreRegistryRead;
+    readCandidates?: readonly SessionStoreReadCandidate[];
+    readPaths?: CapturedSessionStorePaths;
     onResolvedTarget?: (selected: SessionStoreTarget, physical: SessionStoreTarget) => void;
   } = {},
 ): SessionStoreTarget[] {
@@ -225,19 +248,18 @@ export function resolveAllAgentSessionStoreCandidateTargetsSync(
 
 function resolveAllAgentSessionStoreTargets(
   cfg: OpenClawConfig,
-  params: {
-    env?: NodeJS.ProcessEnv;
-    registeredDatabases?: SessionStoreRegistryRead;
-    onResolvedTarget?: (selected: SessionStoreTarget, physical: SessionStoreTarget) => void;
-  },
+  params: NonNullable<Parameters<typeof resolveAllAgentSessionStoreTargetsSync>[1]>,
   recoveryCandidates: boolean,
 ): SessionStoreTarget[] {
   const env = params.env ?? process.env;
-  const { configuredTargets, agentsRoots } = resolveSessionStoreDiscoveryState(
-    cfg,
+  const { configuredTargets, agentsRoots } = resolveSessionStoreDiscoveryState(cfg, {
     env,
-    params.registeredDatabases,
-  );
+    registeredDatabases: params.registeredDatabases,
+    readCandidates: params.readCandidates,
+    readPaths: params.readPaths,
+    agentIds: params.agentIds,
+    fixedStoreAgentIds: params.fixedStoreAgentIds,
+  });
   const getRealAgentsRoot = createRealAgentsRootResolver();
   const validatedConfiguredTargets = configuredTargets.flatMap((target) => {
     const agentsRoot = resolveAgentsDirFromSessionStorePath(target.storePath);
@@ -294,13 +316,16 @@ function resolveAllAgentSessionStoreTargets(
       throw err;
     }
   });
+  const candidates = [...validatedConfiguredTargets, ...discoveredTargets];
+  const agentIds = params.agentIds;
   return dedupeSessionStoreTargetsBySqliteTarget(
-    [...validatedConfiguredTargets, ...discoveredTargets],
+    agentIds ? candidates.filter((target) => agentIds.has(target.agentId)) : candidates,
     {
       defaultAgentId: resolveSessionStoreCompatibilityAgentId(cfg),
       env,
       onResolvedTarget: params.onResolvedTarget,
       registeredDatabases: params.registeredDatabases,
+      readCandidates: params.readCandidates,
     },
   );
 }
@@ -511,13 +536,7 @@ function resolveAgentSessionStoreTargets(
     return dedupeTargetsByStorePath(targets);
   }
 
-  const { agentsRoots } = resolveSessionStoreDiscoveryState(
-    cfg,
-    env,
-    params.registeredDatabases,
-    params.readCandidates,
-    params.readPaths,
-  );
+  const { agentsRoots } = resolveSessionStoreDiscoveryState(cfg, { ...params, env });
   for (const agentsDir of agentsRoots) {
     try {
       const realAgentsRoot = getRealAgentsRoot(agentsDir);
@@ -566,7 +585,7 @@ export function resolveConfiguredAgentDatabaseCandidatePaths(
       listConfiguredSessionStoreAgentIds(cfg).flatMap((agentId) =>
         listSqliteTargetCandidatePathsForSessionStorePath(
           resolveSessionStorePathCore(cfg.session?.store, { agentId, env: params.env }),
-        ),
+        ).concat(path.join(resolveAgentDir(cfg, agentId, params.env), "openclaw-agent.sqlite")),
       ),
     ),
   ];
@@ -575,34 +594,37 @@ export function resolveConfiguredAgentDatabaseCandidatePaths(
 /** Include configured agent roots and session stores with their exact database owners. */
 export function resolveConfiguredAgentDatabaseTargets(
   cfg: OpenClawConfig,
-  params: {
-    env: NodeJS.ProcessEnv;
-    registeredDatabases?: SessionStoreRegistryRead;
-  },
+  params: { env: NodeJS.ProcessEnv; registeredDatabases?: SessionStoreRegistryRead },
 ): Array<{ agentId: string; path: string }> {
-  const targets = resolveSessionStoreTargets(cfg, { allAgents: true }, params).map((target) => {
-    const resolved = resolveSqliteTargetFromSessionStorePath(target.storePath, {
-      agentId: target.agentId,
-      defaultAgentId: isPerAgentSessionStoreConfig(cfg.session?.store)
-        ? target.agentId
-        : resolveSessionStoreCompatibilityAgentId(cfg),
-      env: params.env,
-      registeredDatabases: params.registeredDatabases,
-    });
-    // Shared stores partition logical agents inside one physical schema owner.
-    return { agentId: resolved.agentId ?? target.agentId, path: resolved.path };
+  const { env } = params;
+  const targets = new Map<string, { agentId: string; path: string }>();
+  const add = (agentId: string, pathname: string) =>
+    targets.set(`${agentId}\0${pathname}`, { agentId, path: pathname });
+  dedupeSessionStoreTargetsBySqliteTarget(resolveConfiguredSessionStoreTargets(cfg, env), {
+    ...params,
+    defaultAgentId: resolveSessionStoreCompatibilityAgentId(cfg),
+    onResolvedTarget: (_selected, physical) => add(physical.agentId, physical.storePath),
   });
-  const seen = new Set(targets.map((target) => `${target.agentId}\0${target.path}`));
   for (const agentId of listAgentIds(cfg)) {
-    const databasePath = path.join(
-      resolveAgentDir(cfg, agentId, params.env),
-      "openclaw-agent.sqlite",
-    );
-    if (!seen.has(`${agentId}\0${databasePath}`)) {
-      targets.push({ agentId, path: databasePath });
-    }
+    add(agentId, path.join(resolveAgentDir(cfg, agentId, env), "openclaw-agent.sqlite"));
   }
-  return targets;
+  return [...targets.values()];
+}
+
+export function isConfiguredAgentDatabaseTarget(
+  targets: readonly { agentId?: string; path: string }[],
+  agentId: string | undefined,
+  pathname: string,
+): boolean {
+  // Only concrete files prove aliases; preserve exact configured claims for inspection.
+  return targets.some(
+    (target) =>
+      (agentId === undefined || target.agentId === undefined || target.agentId === agentId) &&
+      (target.path === pathname ||
+        (fsSync.statSync(target.path, { throwIfNoEntry: false }) &&
+          fsSync.statSync(pathname, { throwIfNoEntry: false }) &&
+          isSameOpenClawAgentDatabasePath(target.path, pathname))),
+  );
 }
 
 /** Resolves session store targets from explicit CLI-style selection options. */

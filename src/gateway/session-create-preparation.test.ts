@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
 import {
   clearActiveEmbeddedRun,
   isEmbeddedAgentRunActive,
@@ -20,13 +21,14 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { StateDatabaseReadAdmissionInvalidatedError } from "../state/openclaw-state-db-async-lifecycle.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db-cache.js";
 import * as repositoryWorkspaces from "../state/session-repository-workspaces.js";
+import { prepareUserProfileCatalog } from "../state/user-profile-list.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { prepareSessionRepositoryWorkspace } from "./server-methods/session-create-project.js";
 import { createGatewaySession } from "./session-create-service.js";
 import { resolveSessionMutationAuthorization } from "./session-sharing.js";
 import { roleClient, rolePolicyConfig } from "./session-sharing.test-utils.js";
-import { resolveGatewaySessionStoreTarget } from "./session-utils.js";
+import { resolveGatewaySessionStoreTargetInWorker } from "./session-utils-store-worker.js";
 
 describe("Gateway creation preparation", () => {
   it.each(["caller", "database"] as const)(
@@ -113,9 +115,17 @@ describe("Gateway creation preparation", () => {
     },
   );
 
-  it.each(["canonical", "alias", "sessionId", "embedded"] as const)(
-    "rejects workspace preparation before allocation while %s owns active work",
-    async (identity) => {
+  it.each([
+    ["canonical", undefined],
+    ["alias", undefined],
+    ["sessionId", undefined],
+    ["embedded", undefined],
+    ["canonical", "sessionRoot"],
+    ["canonical", "spawnedCwd"],
+    ["canonical", "execNode"],
+  ] as const)(
+    "rejects active %s work before workspace allocation or direct binding (%s)",
+    async (identity, binding) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const key = "agent:main:main";
         const originalRoot = state.path("original");
@@ -131,7 +141,10 @@ describe("Gateway creation preparation", () => {
         if (!first.ok) {
           throw new Error(first.error.message);
         }
-        const scope = { ...resolveGatewaySessionStoreTarget({ cfg: {}, key }), sessionKey: key };
+        const scope = {
+          ...(await resolveGatewaySessionStoreTargetInWorker({ cfg: {}, key })),
+          sessionKey: key,
+        };
         const transcriptScope = { ...scope, sessionId: first.entry.sessionId };
         for (const message of [
           { role: "user", content: "Keep this conversation when moving the workspace." },
@@ -173,7 +186,14 @@ describe("Gateway creation preparation", () => {
           value: { sessionRoot: destination, spawnedCwd: destination },
         }));
         try {
-          expect(await createGatewaySession({ ...common, prepareLifecycle })).toMatchObject({
+          expect(
+            await createGatewaySession({
+              ...common,
+              ...(binding
+                ? { [binding]: binding === "execNode" ? "selected-node" : destination }
+                : { prepareLifecycle }),
+            }),
+          ).toMatchObject({
             ok: false,
             error: { code: "UNAVAILABLE", message: expect.stringContaining("still active") },
           });
@@ -225,11 +245,11 @@ describe("Gateway creation preparation", () => {
       if (!first.ok) {
         throw new Error(first.error.message);
       }
-      const target = resolveGatewaySessionStoreTarget({ cfg: {}, key });
+      const target = await resolveGatewaySessionStoreTargetInWorker({ cfg: {}, key });
       const scope = { agentId: target.agentId, sessionKey: key, storePath: target.storePath };
       const entered = createDeferredCore();
       const rotate = createDeferredCore();
-      const mutation = runExclusiveSessionLifecycleMutation({
+      const mutation = runExclusiveSessionLifecycleMutation("create", {
         scope: target.storePath,
         identities: [key, first.entry.sessionId],
         run: async () => {
@@ -243,9 +263,23 @@ describe("Gateway creation preparation", () => {
         ok: true as const,
         value: { sessionRoot: state.path("worktree") },
       }));
-      const adoption = createGatewaySession({ ...common, prepareLifecycle });
-      rotate.resolve();
+      const lifecycleAdmission = createDeferredCore();
+      const adoption = createGatewaySession({
+        ...common,
+        prepareLifecycle,
+        onPhase: (phase) => {
+          if (phase === "lifecycleAdmission") {
+            lifecycleAdmission.resolve();
+          }
+        },
+      });
       try {
+        await awaitGateBeforeSettlement(
+          lifecycleAdmission.promise,
+          adoption,
+          "Session adoption settled before lifecycle admission",
+        );
+        rotate.resolve();
         await mutation;
         expect(await adoption).toMatchObject({
           ok: false,
@@ -259,38 +293,6 @@ describe("Gateway creation preparation", () => {
       }
     });
   });
-
-  it.each(["sessionRoot", "spawnedCwd", "execNode"] as const)(
-    "rejects an active target's changed %s without a preparation callback",
-    async (binding) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async () => {
-        const key = "agent:main:direct-binding";
-        const common = {
-          cfg: {},
-          key,
-          commandSource: "test",
-          operatorRoleActor: { kind: "system" as const },
-        };
-        const first = await createGatewaySession(common);
-        expect(first.ok).toBe(true);
-        const target = resolveGatewaySessionStoreTarget({ cfg: {}, key });
-        const admission = await beginSessionWorkAdmission({
-          scope: target.storePath,
-          identities: [key],
-          assertAllowed: () => {},
-        });
-        try {
-          const value = binding === "execNode" ? "selected-node" : "/selected-workspace";
-          expect(await createGatewaySession({ ...common, [binding]: value })).toMatchObject({
-            ok: false,
-            error: { code: "UNAVAILABLE", message: expect.stringContaining("still active") },
-          });
-        } finally {
-          admission.release();
-        }
-      });
-    },
-  );
 
   it.each(["commit", "rollback"] as const)(
     "holds queued admission through workspace %s while unrelated work progresses",
@@ -313,7 +315,7 @@ describe("Gateway creation preparation", () => {
         expect(
           (await createGatewaySession({ ...common, key: "agent:main:sibling", label: "Taken" })).ok,
         ).toBe(true);
-        const target = resolveGatewaySessionStoreTarget({ cfg: {}, key });
+        const target = await resolveGatewaySessionStoreTargetInWorker({ cfg: {}, key });
         const scope = { agentId: target.agentId, sessionKey: key, storePath: target.storePath };
         const entered = createDeferredCore();
         const proceed = createDeferredCore();
@@ -391,6 +393,7 @@ describe("Gateway creation preparation", () => {
     async (method) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const client = roleClient("view", "creation-caller");
+        using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
         client.connect.scopes = ["operator.sessions.write"];
         const profileId = client.authenticatedUserProfile!.profileId;
         const cfg = rolePolicyConfig();

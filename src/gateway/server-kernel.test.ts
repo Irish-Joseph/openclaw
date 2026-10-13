@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import type { ChannelPlugin } from "../channels/plugins/types.public.js";
 import {
   getConfigOverrides,
@@ -22,6 +22,7 @@ import {
   captureActivePluginRegistrySnapshot,
   restoreActivePluginRegistrySnapshot,
   stageActivePluginRegistry,
+  waitForPluginRegistryRetirement,
 } from "../plugins/runtime.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.js";
@@ -39,19 +40,7 @@ import { createMaintenanceHandles } from "./server-runtime-services.test-harness
 import { expectCoreAgentDatabaseReadiness } from "./server-startup-readiness.test-support.js";
 import { withPreparedSessionEventRow } from "./session-event-prepared-row.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
-
-const KERNEL_TEST_ENV = {
-  OPENCLAW_GATEWAY_PASSWORD: undefined,
-  OPENCLAW_GATEWAY_TOKEN: undefined,
-  OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
-  OPENCLAW_SKIP_CANVAS_HOST: "1",
-  OPENCLAW_SKIP_CHANNELS: "1",
-  OPENCLAW_SKIP_CRON: "1",
-  OPENCLAW_SKIP_GMAIL_WATCHER: "1",
-  OPENCLAW_SKIP_PROVIDERS: "1",
-  OPENCLAW_TEST_MINIMAL_GATEWAY: "1",
-  VITEST: "1",
-};
+import { KERNEL_TEST_ENV } from "./test-helpers.env.js";
 
 describe("createGatewayKernel", () => {
   it.each([false, true])(
@@ -60,7 +49,6 @@ describe("createGatewayKernel", () => {
       const port = await getFreePort();
       const state = await createOpenClawTestState({
         label: "gateway-kernel-breaker-recovery-close",
-        layout: "home",
         env: {
           ...KERNEL_TEST_ENV,
           OPENCLAW_SKIP_CHANNELS: undefined,
@@ -132,14 +120,14 @@ describe("createGatewayKernel", () => {
           },
           controlUiEnabled: false,
           sidecarStartup: "defer",
-          tryRecoverChannelAutostartSuppression: () => true,
+          tryRecoverChannelAutostartSuppression: async () => undefined,
         });
 
-        await expect(kernel.channelManager.recoverAutostartSuppression()).resolves.toBe(true);
+        await expect(kernel.channelManager.recoverAutostartSuppression()).resolves.toBeUndefined();
         expect(startAccount).not.toHaveBeenCalled();
 
         if (closing) {
-          await kernel.beginClosePrelude();
+          await kernel.prepareClose();
         }
         kernel.releaseStartupAccountStarts();
         await (closing ? nextTurn() : started.promise);
@@ -163,7 +151,6 @@ describe("createGatewayKernel", () => {
       const port = await getFreePort();
       const state = await createOpenClawTestState({
         label: `gateway-kernel-${entry}-close-readiness`,
-        layout: "home",
         env: { ...KERNEL_TEST_ENV },
       });
       const token = "gateway-kernel-close-readiness-token";
@@ -299,9 +286,11 @@ describe("createGatewayKernel", () => {
             updatedAt: 1,
           },
         } satisfies GatewayClient;
-        expect(kernel.gatewayRequestContext.mentionInbox?.list(reader)).toMatchObject({
-          ok: true,
-          value: { gatewayInstanceId: bootId, items: [] },
+        await kernel.gatewayRequestContext.mentionInbox?.listAsync(reader, (result) => {
+          expect(result).toMatchObject({
+            ok: true,
+            value: { gatewayInstanceId: bootId, items: [] },
+          });
         });
         const boundHost = kernel.gatewayRequestContext.hostLifecycle!;
         // Handoff consumption compares the private owner, not a copied predicate.
@@ -326,7 +315,6 @@ describe("createGatewayKernel", () => {
           .mockReturnValue(updateWork);
         const terminalDispose = vi.spyOn(kernel.terminalSessions, "disposeAll");
         const gatewayStop = vi.spyOn(kernel.shutdownRuntime, "runGlobalGatewayStopSafely");
-        const prepareShutdown = vi.spyOn(kernel.shutdownRuntime, "prepareGatewayClose");
         const maintenance = createMaintenanceHandles();
         maintenance.stopPeriodicTasks.mockReturnValue(periodicStopped.promise);
         kernel.kernel.setMaintenanceHandles(maintenance);
@@ -343,16 +331,14 @@ describe("createGatewayKernel", () => {
 
         expect(getStartup()).toMatchObject({ ok: false, status: "draining" });
         expect(getReadiness()).toMatchObject({ ready: false, failing: ["gateway-draining"] });
-        expect(kernel.gatewayRequestContext.mentionInbox?.list(reader)).toMatchObject({
-          ok: false,
-          error: { code: "UNAVAILABLE" },
+        await kernel.gatewayRequestContext.mentionInbox?.listAsync(reader, (result) => {
+          expect(result).toMatchObject({ ok: false, error: { code: "UNAVAILABLE" } });
         });
         nativePreparation.resolve();
         await pendingStop;
         await expect(boundHost.request("start", () => {})).rejects.toThrow("closed instance");
         expect(acceptRequest).not.toHaveBeenCalled();
         expect(invalidateCron).toHaveBeenCalledOnce();
-        expect(stopRecovery).toHaveBeenCalledOnce();
         await nextTurn();
         expect(startMaintenance).not.toHaveBeenCalled();
         expect(reloadStop).toHaveBeenCalledOnce();
@@ -372,7 +358,6 @@ describe("createGatewayKernel", () => {
         expect(closeFirstStop).not.toHaveBeenCalled();
         updateCheckStopped.resolve();
         await nextTurn();
-        expect(prepareShutdown).not.toHaveBeenCalled();
         periodicStopped.resolve();
         await Promise.race([publicationDrainEntered.promise, closing]);
         expect(projectionDispose).not.toHaveBeenCalled();
@@ -417,10 +402,11 @@ describe("createGatewayKernel", () => {
       const port = await getFreePort();
       const state = await createOpenClawTestState({
         label: "gateway-kernel-reload-candidate",
-        layout: "home",
         env: {
           ...KERNEL_TEST_ENV,
           OPENCLAW_TEST_MINIMAL_GATEWAY: "0",
+          OPENCLAW_SKIP_CHANNELS: undefined,
+          OPENCLAW_SKIP_PROVIDERS: undefined,
         },
       });
       const previousOverrides = getConfigOverrides();
@@ -573,7 +559,6 @@ describe("createGatewayKernel", () => {
     const port = await getFreePort();
     const state = await createOpenClawTestState({
       label: "gateway-kernel-deferred-readiness",
-      layout: "home",
       env: {
         ...KERNEL_TEST_ENV,
         OPENCLAW_TEST_MINIMAL_GATEWAY: "0",
@@ -595,7 +580,11 @@ describe("createGatewayKernel", () => {
           controlUi: { enabled: false },
           port,
         },
-        agents: { entries: { main: { default: true }, worker: {} } },
+        agents: {
+          ownership: "explicit",
+          defaults: { systemAgent: { agentId: "main" } },
+          entries: { main: {}, worker: {} },
+        },
       });
       state.applyEnv();
       kernel = await openKernel();
@@ -633,6 +622,11 @@ describe("createGatewayKernel", () => {
       kernel.kernel.unlockStartupMethods();
       kernel.kernel.markSidecarsReady();
 
+      expect(getReadiness()).toMatchObject({
+        ready: false,
+        failing: ["startup-sidecars"],
+      });
+      kernel.kernel.setDispatchReady(true);
       expectCoreAgentDatabaseReadiness(getReadiness, state);
       await expect(
         dispatchGatewayRequestInProcess("chat.send", chatParams, dispatchOptions),
@@ -796,11 +790,10 @@ describe("createGatewayKernel", () => {
     }
   });
 
-  it("dispatches health and an agent turn without creating a transport", async () => {
+  it("dispatches health and an agent turn without creating a transport", async ({ signal }) => {
     const port = await getFreePort();
     const state = await createOpenClawTestState({
       label: "gateway-kernel-no-transport",
-      layout: "home",
       env: {
         OPENCLAW_DIAGNOSTICS: "1",
         OPENCLAW_DIAGNOSTICS_TIMELINE_PATH: undefined,
@@ -920,10 +913,10 @@ describe("createGatewayKernel", () => {
         "config.snapshot.read.includes",
         "config.snapshot.read.env",
         "config.snapshot.read.validate",
-        "plugins.metadata.scan",
-        "plugins.metadata.freeze",
         "config.snapshot.read.materialize",
         "config.snapshot.read.observe",
+        "plugins.metadata.scan",
+        "plugins.metadata.freeze",
         "state.ownership",
         "state.runtime-imports",
         "state.schema-preflight",
@@ -943,7 +936,7 @@ describe("createGatewayKernel", () => {
         "config.auth.secrets-activate",
         "agents.github-profile-cleanup",
         "plugins.bootstrap-imports",
-        "startup.maintenance",
+        "cron.store-path",
         "plugins.bootstrap",
         "gateway.kernel-state",
         "node-desktop.runtime-import",
@@ -966,9 +959,14 @@ describe("createGatewayKernel", () => {
         "runtime.early",
         "runtime.early.discovery",
         "gateway.request-runtime",
+        "gateway.chat-metadata-lifecycle",
         "gateway.config-revision-key",
         "gateway.request-context",
         "sessions.projection",
+        "gateway.instance-runtime-import",
+        "gateway.owner-profile",
+        "sessions.materialize",
+        "gateway.lifetime-sidecars",
       ]);
     } finally {
       try {
@@ -976,18 +974,20 @@ describe("createGatewayKernel", () => {
       } finally {
         try {
           flushDiagnosticsTimeline();
-          await state.cleanup();
-        } finally {
           if (capturedLoadedPluginRegistry) {
             restoreActivePluginRegistrySnapshot(capturedLoadedPluginRegistry);
           }
           prematureCleanupCalls = capturedRegistryCleanup.mock.calls.length;
           restoreActivePluginRegistrySnapshot(originalPluginRegistry);
+          await waitForPluginRegistryRetirement(ambientRegistry);
+        } finally {
+          await state.cleanup();
         }
       }
     }
     expect(prematureCleanupCalls).toBe(0);
-    await vi.waitFor(() => expect(capturedRegistryCleanup).toHaveBeenCalledOnce());
+    await withinTest(waitForPluginRegistryRetirement(ambientRegistry), signal);
+    expect(capturedRegistryCleanup).toHaveBeenCalledOnce();
     expect(inspectAccount).not.toHaveBeenCalled();
   });
 
@@ -995,7 +995,6 @@ describe("createGatewayKernel", () => {
     const port = await getFreePort();
     const state = await createOpenClawTestState({
       label: "gateway-kernel-tls-failure",
-      layout: "home",
       env: { ...KERNEL_TEST_ENV },
     });
     const token = "gateway-kernel-tls-failure-token";

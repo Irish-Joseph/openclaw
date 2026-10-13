@@ -5,6 +5,7 @@ import { parseCronPacingBounds } from "../../cron/pacing.js";
 import type { CronPacing } from "../../cron/types.js";
 import { CRON_MANAGEMENT_METHODS } from "../../gateway/cron-creator-authority-grant.js";
 import { isRecord } from "../../utils.js";
+import { createCachedToolSchema } from "../schema/cached-schema.js";
 import {
   optionalNonNegativeIntegerSchema,
   optionalPositiveIntegerSchema,
@@ -316,10 +317,11 @@ function createCronFailureAlertSchema(): TSchema {
           { additionalProperties: true },
         ),
         Type.Literal(false),
+        Type.Null(),
       ],
       {
         description:
-          "Failure alert policy/route override. Route-backed jobs default to after=2 for execution failures and cooldownMs=3600000 for all failure alerts; false disables execution/delivery alerts but not the auto-disable safety notice.",
+          "Failure alert policy/route override; null clears. Route-backed jobs default to after=2 for execution failures and cooldownMs=3600000 for all failure alerts; false disables execution/delivery alerts but not the auto-disable safety notice.",
       },
     ),
   );
@@ -327,6 +329,21 @@ function createCronFailureAlertSchema(): TSchema {
 
 // Flattened schema: runtime validates per-action requirements.
 export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
+  return cronToolSchemas(options);
+}
+
+const cronToolSchemas = createCachedToolSchema({
+  key: (options?: CronToolSchemaOptions) =>
+    JSON.stringify([
+      options?.triggersEnabled !== false,
+      options?.management ?? null,
+      options?.selfRemoveOnly === true,
+      Boolean(options?.agentSessionKey?.trim()),
+    ]),
+  build: buildCronToolSchema,
+});
+
+function buildCronToolSchema(options?: CronToolSchemaOptions): TSchema {
   const triggersEnabled = options?.triggersEnabled !== false;
   const management = Boolean(options?.management);
   const managementOnly = options?.management === "only";
@@ -339,7 +356,7 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
         name: Type.Optional(Type.String({ description: "Job name" })),
         declarationKey: Type.Optional(
           Type.String({
-            description: "Idempotent declaration key (add only).",
+            description: "Key to avoid duplicate declarations (add only).",
             minLength: 1,
             maxLength: 200,
           }),
@@ -424,6 +441,9 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
         description:
           'Run mode for action="run": omitted defaults to "due"; use "force" to trigger now.',
       }),
+      runId: Type.Optional(
+        Type.String({ description: 'Run id from action="run" to read with action="runs"' }),
+      ),
       contextMessages: Type.Optional(
         Type.Integer({ minimum: 0, maximum: REMINDER_CONTEXT_MESSAGES_MAX }),
       ),
@@ -452,10 +472,10 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
       "includeDisabled",
       "jobId",
       "id",
-      ...(managementOnly ? [] : ["in"]),
+      ...(managementOnly ? [] : ["in", "runId"]),
     ]);
   }
   return managementOnly
-    ? Type.Omit(schema, ["in", "text", "mode", "contextMessages", "sessionKey"])
+    ? Type.Omit(schema, ["in", "text", "mode", "contextMessages", "sessionKey", "runId"])
     : schema;
 }

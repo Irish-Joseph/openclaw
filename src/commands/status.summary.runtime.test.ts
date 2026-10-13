@@ -1,15 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { migratePersistedImplicitMainRoster } from "../config/legacy.roster.js";
 import { statusSummaryRuntime } from "../status/summary.runtime.js";
-
-function resolveSessionRuntime(
-  params: Parameters<typeof statusSummaryRuntime.resolveSessionRuntime>[0],
-) {
-  return statusSummaryRuntime.resolveSessionRuntime({
-    ...params,
-    cfg: migratePersistedImplicitMainRoster(params.cfg).config as never,
-  });
-}
 
 function runtimeConfig(id: "codex" | "openclaw") {
   return { agents: { defaults: { models: { "openai/gpt-5.5": { agentRuntime: { id } } } } } };
@@ -23,22 +13,21 @@ describe("statusSummaryRuntime", () => {
     ).toBe("cron");
   });
 
-  it("preserves configured agent model runtimes before harness selection", () => {
+  it("preserves configured agent model runtimes before harness selection", async () => {
     expect(
-      resolveSessionRuntime({
+      await statusSummaryRuntime.resolveSessionRuntime({
         cfg: {
           agents: {
             ...runtimeConfig("openclaw").agents,
-            list: [
-              {
-                id: "research",
+            entries: {
+              research: {
                 models: {
                   "openai/gpt-5.5": { agentRuntime: { id: "codex" } },
                 },
               },
-            ],
+            },
           },
-        } as never,
+        },
         entry: {
           sessionId: "session-1",
           updatedAt: 0,
@@ -51,9 +40,9 @@ describe("statusSummaryRuntime", () => {
     ).toEqual({ id: "codex", label: "OpenAI Codex" });
   });
 
-  it("does not treat an unlocked producing harness as the current runtime", () => {
+  it("does not treat an unlocked producing harness as the current runtime", async () => {
     expect(
-      resolveSessionRuntime({
+      await statusSummaryRuntime.resolveSessionRuntime({
         cfg: runtimeConfig("codex"),
         entry: {
           sessionId: "openclaw-produced-session",
@@ -67,9 +56,9 @@ describe("statusSummaryRuntime", () => {
     ).toEqual({ id: "codex", label: "OpenAI Codex (previous runtime: OpenClaw Default)" });
   });
 
-  it("reports the owning Codex harness for a locked session with stale OpenClaw metadata", () => {
+  it("reports the owning Codex harness for a locked session with stale OpenClaw metadata", async () => {
     expect(
-      resolveSessionRuntime({
+      await statusSummaryRuntime.resolveSessionRuntime({
         cfg: runtimeConfig("openclaw"),
         entry: {
           sessionId: "locked-codex-session",

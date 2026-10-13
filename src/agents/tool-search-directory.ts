@@ -18,7 +18,7 @@ import {
   type ToolSearchMode,
   type ToolSearchToolContext,
 } from "./tool-search-types.js";
-import { ToolInputError, type AnyAgentTool } from "./tools/common.js";
+import type { AnyAgentTool } from "./tools/common.js";
 
 const MAX_TOOL_SCHEMA_DIRECTORY_PROMPT_CHARS = 18_000;
 const TOOL_DIRECTORY_IDENTIFIER_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
@@ -29,10 +29,6 @@ const toolSchemaDirectoryPromptCache = new WeakMap<ToolSearchCatalogEntry[], Map
 export function applyToolSchemaDirectoryCatalog(params: {
   tools: AnyAgentTool[];
   config?: Parameters<typeof resolveToolSearchConfig>[0];
-  sessionId?: string;
-  sessionKey?: string;
-  agentId?: string;
-  runId?: string;
   catalogRef?: ToolSearchCatalogRef;
   toolHookContext?: Parameters<typeof applyToolCatalogCompaction>[0]["toolHookContext"];
   directToolNames?: Iterable<string>;
@@ -103,24 +99,13 @@ export function resolveToolSearchCatalogTool(
   name: unknown,
   options?: CatalogVisibilityOptions,
 ): AnyAgentTool | undefined {
-  if (typeof name !== "string") {
+  const catalog = ctx.catalogRef?.current;
+  const needle = typeof name === "string" ? name.trim() : "";
+  if (!needle || !catalog) {
     return undefined;
   }
-  const needle = name.trim();
-  if (!needle) {
-    return undefined;
-  }
-  try {
-    const matches = visibleCatalogEntries(resolveCatalog(ctx), options).filter(
-      (entry) => entry.name === needle,
-    );
-    return matches.length === 1 ? (matches[0]?.tool as AnyAgentTool | undefined) : undefined;
-  } catch (error) {
-    if (error instanceof ToolInputError) {
-      return undefined;
-    }
-    throw error;
-  }
+  const matches = visibleCatalogEntries(catalog, options).filter((entry) => entry.name === needle);
+  return matches.length === 1 ? (matches[0]?.tool as AnyAgentTool | undefined) : undefined;
 }
 
 function compactDirectoryDescription(description: string, maxChars: number): string {
@@ -197,10 +182,10 @@ function formatToolSearchCatalogDirectory(
         : "Use tool_search for a compact input signature or tool_describe for a full schema.";
     if (mode === "tools") {
       guidance +=
-        " Deferred names are not directly callable. Call tool_call with the result id or name in id and all tool parameters in args. Use this wrapper even when other guidance names a deferred tool directly.";
+        " Deferred names are not directly callable. Call dispatch_action with the result id or name in id and all tool parameters in args. Use this wrapper even when other guidance names a deferred tool directly.";
     } else if (mode === "directory") {
       guidance +=
-        " Call a unique deferred tool name directly, or use tool_call with its id and args.";
+        " Call a unique deferred tool name directly, or use dispatch_action with its id and args.";
     }
     const footerChars =
       guidance.length + (omitted > 0 ? String(omitted).length + omittedLabel.length : 0);

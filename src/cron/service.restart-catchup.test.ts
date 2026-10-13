@@ -3,7 +3,7 @@ import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-cloc
 import { CronService } from "./service.js";
 import { setupCronServiceSuite } from "./service.test-harness.js";
 import { createCronServiceState, type CronServiceDeps } from "./service/state.js";
-import { runMissedJobs } from "./service/timer.js";
+import { runMissedJobs } from "./service/timer.test-support.js";
 import { loadCronStore, saveCronStore } from "./store.js";
 import type { CronJob } from "./types.js";
 
@@ -242,9 +242,22 @@ describe("CronService restart catch-up", () => {
         }),
       ],
       async (cron, deps) => {
-        expect(cron.getJob("restart-job")).toBeUndefined();
-        expect(deps.enqueueSystemEvent).toHaveBeenCalledOnce();
-        expect(deps.requestHeartbeat).toHaveBeenCalledOnce();
+        const recovered = cron.getJob("restart-job");
+        expect(recovered).toMatchObject({
+          enabled: false,
+          deleteAfterRun: true,
+          schedule: { kind: "at", at: "2025-12-13T16:00:00.000Z" },
+          state: {
+            lastRunAtMs: runningAtMs,
+            lastRunStatus: "error",
+            lastDeliveryStatus: "unknown",
+          },
+        });
+        expect(recovered?.state.runningAtMs).toBeUndefined();
+        expect(recovered?.state.nextRunAtMs).toBeUndefined();
+        expect(recovered?.state.startupCatchupAtMs).toBeUndefined();
+        expect(deps.enqueueSystemEvent).not.toHaveBeenCalled();
+        expect(deps.requestHeartbeat).not.toHaveBeenCalled();
         expect(deps.onEvent).toHaveBeenCalledWith(
           expect.objectContaining({
             jobId: "restart-job",

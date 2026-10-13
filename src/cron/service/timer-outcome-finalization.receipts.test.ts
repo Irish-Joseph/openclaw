@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { loseFirstCronMutationReply } from "../../../test/helpers/cron/runtime-mutation.js";
 import {
   createCronRegressionState,
   createDueIsolatedJob,
@@ -15,20 +16,18 @@ import { advanceCronActiveJobGeneration, markCronJobActive } from "../active-job
 import { loadCronStore, saveCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
 import {
-  finishCronRunReceiptAsync,
-  prepareCronRunReceiptClaim,
-} from "../store/run-receipt-store.js";
-import {
   claimCronRunReceiptInDatabaseForTest,
   inspectActiveCronRunReceipt,
+  finishCronRunReceiptAsync,
+  prepareCronRunReceiptClaim,
 } from "../store/run-receipt-store.test-support.js";
 import type { CronJob } from "../types.js";
-import { reserveQueuedCronRun } from "./run-admission.js";
+import { list } from "./ops-read.js";
 import { createCronRunHandle } from "./run-history.js";
 import { createCronServiceState } from "./state.js";
 import type { TimedCronRunOutcome } from "./timer-execution-timeout.js";
+import { authorCronRunCompletion } from "./timer-job-runner.js";
 import { finalizeCompletedCronRunOutcomes } from "./timer-outcome-finalization.js";
-import { authorCronRunCompletion } from "./timer.js";
 import { onTimer } from "./timer.test-support.js";
 
 const fixtures = setupCronRegressionFixtures({ prefix: "cron-finalization-receipts-" });
@@ -50,16 +49,59 @@ function claimReceipt(storePath: string, job: CronJob, startedAtMs: number) {
   );
 }
 
-function authorOutcome(
-  state: ReturnType<typeof createCronServiceState>,
-  outcome: Omit<TimedCronRunOutcome, "completionStatus" | "deliveryState">,
-) {
-  return authorCronRunCompletion(state, outcome.job, outcome);
+function authorOutcome(outcome: Omit<TimedCronRunOutcome, "completionStatus" | "deliveryState">) {
+  return authorCronRunCompletion(outcome.job, outcome);
 }
 
 describe("cron outcome receipt finalization", () => {
+  it("refreshes the public job view after a committed terminal reply is lost", async () => {
+    const { storePath } = fixtures.makeStorePath();
+    const startedAt = Date.parse("2026-02-06T10:05:00.000Z");
+    const job = createDueIsolatedJob({
+      id: "lost-terminal-reply",
+      nowMs: startedAt,
+      nextRunAtMs: startedAt,
+    });
+    job.schedule = { kind: "every", everyMs: 60_000, anchorMs: startedAt };
+    job.state.runningAtMs = startedAt;
+    await saveCronStore(storePath, { version: 1, jobs: [job] });
+    const runReceipt = claimReceipt(storePath, job, startedAt);
+    const state = createCronRegressionState({
+      storePath,
+      nowMs: () => startedAt + 1,
+      runIsolatedAgentJob: vi.fn(),
+    });
+    state.schedulerStarted = true;
+    expect((await list(state))[0]?.state.runningAtMs).toBe(startedAt);
+    const dropped = loseFirstCronMutationReply("cron.finalizeRuns");
+    try {
+      await expect(
+        finalizeCompletedCronRunOutcomes(state, [
+          authorOutcome({
+            jobId: job.id,
+            job,
+            activeJobMarker: markCronJobActive(job.id),
+            runReceipt,
+            runReceiptContext: captureOpenClawStateWorkerContext(),
+            status: "ok",
+            startedAt,
+            endedAt: startedAt + 1,
+          }),
+        ]),
+      ).rejects.toThrow();
+      expect(dropped.wasDropped()).toBe(true);
+      await dropped.waitForExit();
+      expect((await loadCronStore(storePath)).jobs[0]?.state.lastRunStatus).toBe("ok");
+      const visible = (await list(state))[0];
+      expect(visible?.state.lastRunStatus).toBe("ok");
+      expect(visible?.state.runningAtMs).toBeUndefined();
+    } finally {
+      await dropped.close();
+    }
+  });
+
   it.each([false, true])(
-    "refreshes a retired outcome without consuming a same-millisecond successor (replaced=%s)",
+    "preserves authored rows while finalizing a retired outcome without consuming a same-millisecond successor (replaced=%s)",
     async (replaced) => {
       const store = fixtures.makeStorePath();
       const startedAt = Date.now();
@@ -76,6 +118,8 @@ describe("cron outcome receipt finalization", () => {
       retired.schedule = { kind: "at", at: new Date(startedAt).toISOString() };
       retired.deleteAfterRun = false;
       retired.state.runningAtMs = startedAt;
+      current.schedule = { kind: "every", everyMs: 60_000, anchorMs: startedAt };
+      current.deleteAfterRun = false;
       current.state.runningAtMs = startedAt;
       await saveCronStore(store.storePath, { version: 1, jobs: [retired, current] });
       const runReceiptContext = captureOpenClawStateWorkerContext();
@@ -93,10 +137,6 @@ describe("cron outcome receipt finalization", () => {
         runReceipt: retiredReceipt,
       }).runId;
       const retiredMarker = markCronJobActive(retired.id);
-      const reservationIdentity = reserveQueuedCronRun(state, retired.id, startedAt, {
-        runReceipt: retiredReceipt,
-        runReceiptContext,
-      });
       advanceCronActiveJobGeneration();
       const currentMarker = markCronJobActive(current.id);
       let successor: ReturnType<typeof claimReceipt> | undefined;
@@ -108,21 +148,41 @@ describe("cron outcome receipt finalization", () => {
         });
         successor = claimReceipt(store.storePath, retired, startedAt);
       }
+      const database = openOpenClawStateDatabase().db;
+      const storeKey = cronStoreKey(store.storePath);
+      database
+        .prepare(
+          `UPDATE cron_jobs
+           SET agent_id = 'main', owner_agent_id = 'main', grant_definition_generation = 17,
+               job_json = json_set(json_remove(job_json, '$.enabled'),
+                 '$.notify', json('true'), '$.authoredNote', 'preserve me')
+           WHERE store_key = ?`,
+        )
+        .run(storeKey);
+      const readDefinitions = () =>
+        database
+          .prepare(
+            `SELECT job_id, job_json, enabled, agent_id, owner_agent_id, sort_order, updated_at,
+                    grant_definition_revision, grant_definition_generation, grant_definition_updated_at
+             FROM cron_jobs WHERE store_key = ? ORDER BY sort_order`,
+          )
+          .all(storeKey);
+      const definitionsBefore = readDefinitions();
+      expect(definitionsBefore).toHaveLength(2);
       try {
         await finalizeCompletedCronRunOutcomes(state, [
-          authorOutcome(state, {
+          authorOutcome({
             jobId: retired.id,
             job: retired,
             taskRunId,
             activeJobMarker: retiredMarker,
-            reservationIdentity,
             runReceipt: retiredReceipt,
             runReceiptContext,
             status: "ok",
             startedAt,
             endedAt: startedAt,
           }),
-          authorOutcome(state, {
+          authorOutcome({
             jobId: current.id,
             job: current,
             activeJobMarker: currentMarker,
@@ -148,6 +208,28 @@ describe("cron outcome receipt finalization", () => {
           expect(persisted?.state.runningAtMs).toBeUndefined();
         }
         expect(state.store?.jobs.find((job) => job.id === retired.id)).toEqual(persisted);
+        const expectedDefinitions = structuredClone(definitionsBefore);
+        for (const row of expectedDefinitions) {
+          if (replaced || row.job_id !== retired.id) {
+            continue;
+          }
+          if (typeof row.job_json !== "string") {
+            throw new Error("Expected persisted cron definition JSON.");
+          }
+          row.enabled = 0;
+          row.job_json = JSON.stringify({ ...JSON.parse(row.job_json), enabled: false });
+        }
+        expect(readDefinitions()).toEqual(expectedDefinitions);
+        expect(
+          database
+            .prepare("SELECT status FROM cron_run_receipts WHERE receipt_id = ?")
+            .get(currentReceipt.receiptId),
+        ).toEqual({ status: "ok" });
+        expect(
+          database
+            .prepare("SELECT status FROM cron_run_receipts WHERE receipt_id = ?")
+            .get(retiredReceipt.receiptId),
+        ).toEqual({ status: replaced ? "superseded" : "ok" });
       } finally {
         if (successor) {
           await finishCronRunReceiptAsync({
@@ -196,7 +278,7 @@ describe("cron outcome receipt finalization", () => {
     });
 
     await finalizeCompletedCronRunOutcomes(state, [
-      authorOutcome(state, {
+      authorOutcome({
         jobId: stale.id,
         job: stale,
         activeJobMarker: markCronJobActive(stale.id),
@@ -206,7 +288,7 @@ describe("cron outcome receipt finalization", () => {
         startedAt,
         endedAt: startedAt + 2,
       }),
-      authorOutcome(state, {
+      authorOutcome({
         jobId: current.id,
         job: current,
         activeJobMarker: markCronJobActive(current.id),
@@ -281,8 +363,9 @@ describe("cron outcome receipt finalization", () => {
       runIsolatedAgentJob: vi.fn(),
     });
 
+    expect(state.store).toBeNull();
     await finalizeCompletedCronRunOutcomes(state, [
-      authorOutcome(state, {
+      authorOutcome({
         jobId: completed.id,
         job: completed,
         activeJobMarker: markCronJobActive(completed.id),
@@ -344,7 +427,7 @@ describe("cron outcome receipt finalization", () => {
     try {
       await expect(
         finalizeCompletedCronRunOutcomes(state, [
-          authorOutcome(state, {
+          authorOutcome({
             jobId: completed.id,
             job: completed,
             activeJobMarker: markCronJobActive(completed.id),

@@ -9,7 +9,7 @@ the active release identity from the repository and App Store Connect.
 - keep the associated gateway version recognizable
 - support multiple public iOS releases per gateway version
 - support multiple candidate builds per App Store version
-- make every release identity deterministic and inspectable before upload
+- calculate every release identity from the current release state and make it inspectable before upload
 - keep Apple bundle fields valid for App Store Connect
 - generate version-specific App Store release notes from changes since the last public build
 
@@ -207,7 +207,7 @@ Before screenshot or archive work, the App Store destination checks App Store Co
 - an unreleased revision present only in build-upload history is retried
 - a distributed version requires the next revision
 - multiple active versions, a different active gateway, and unknown upload
-  states fail closed for human resolution
+  states block the upload until a person resolves them
 
 Only one iOS release uploader may run at a time. The pipeline rechecks the
 exact plan after local archive and Transporter validation, immediately before
@@ -269,10 +269,10 @@ Generated or derived files:
 - `testflight-result.json` for TestFlight outcomes, including skips and pending review
 - temporary Fastlane metadata for screenshots and the App Review attachment
 
-The canonical implementation is split across:
+The implementation is split across:
 
 - `scripts/lib/ios-version.ts`: version validation, encoding, and historical changelog rendering
-- `scripts/lib/ios-release-plan.ts`: deterministic revision/build selection and
+- `scripts/lib/ios-release-plan.ts`: repeatable revision/build selection and
   changelog cutting
 - `scripts/ios-version.ts`: JSON, shell, and single-field queries
 - `scripts/ios-release-plan.ts`: pure planner CLI used by the Fastlane adapter
@@ -303,6 +303,13 @@ Connect finishes processing the upload, before notes and build selection are
 staged or TestFlight distribution begins. Existing refs are immutable; their
 presence proves the uploaded source, not successful completion of later staging.
 
+Source-ref reads and writes tolerate recognized transient Git failures, including
+GitHub's workflow-check timeout, with up to four attempts and waits of 5, 10, and
+20 seconds. Every push is reconciled against the remote ref before another
+attempt; an unreadable remote never authorizes another push. Authentication
+failures and conflicting source SHAs stop the release. These retries do not
+repeat the build or upload.
+
 ## Normal workflow
 
 1. Commit and land the app changes on `main`.
@@ -319,15 +326,18 @@ presence proves the uploaded source, not successful completion of later staging.
 If upload and processing succeeded but saving notes, selecting the App Store
 build, or completing TestFlight distribution failed, retain the printed recovery
 directory or download its workflow artifact.
-Retry staging from a clean checkout using that original saved state:
+Retry staging from a clean checkout containing any staging fixes, using that
+original saved state:
 
 ```bash
 node scripts/mobile-release.mjs stage --platform ios --recovery-dir /path/to/recovery
 ```
 
-This verifies the immutable upload ref, restores the original source if needed,
-and uses the saved notes and build identity. It does not generate new notes,
-replan a release, build, or upload another IPA. App Store Connect credentials
+This runs the current checkout's staging tooling, verifies the immutable upload
+ref, and restores the original source if needed to validate the saved notes and
+build identity. The staging fixes do not change the uploaded source. Recovery
+does not generate new notes, replan a release, build, or upload another IPA.
+App Store Connect credentials
 are required. Invalid or expired builds and mismatched source stop recovery for
 human resolution. App Store recovery also refuses a locked version or newer
 selected build. TestFlight recovery uses the saved group identity and existing

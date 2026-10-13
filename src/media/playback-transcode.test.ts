@@ -1,3 +1,4 @@
+import "../test-utils/prepare-compiled-subprocesses.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -68,7 +69,16 @@ async function createSource(fileName: string, contents = "source") {
   const fixturePath = path.join(tempHome.home, fileName);
   await fs.writeFile(fixturePath, contents);
   const sourcePath = await fs.realpath(fixturePath);
-  return { sourcePath, sourceStat: await fs.stat(sourcePath) };
+  const sourceStat = await fs.stat(sourcePath);
+  return {
+    sourcePath,
+    sourceStat: {
+      size: sourceStat.size,
+      mtimeMs: sourceStat.mtimeMs,
+      ctimeMs: sourceStat.ctimeMs,
+      exactIdentity: await fs.stat(sourcePath, { bigint: true }),
+    },
+  };
 }
 
 function createCacheKey(source: {
@@ -76,8 +86,7 @@ function createCacheKey(source: {
   size: number;
   mtimeMs: number;
   ctimeMs: number;
-  dev: number;
-  ino: number;
+  exactIdentity: { dev: bigint; ino: bigint };
 }): string {
   const testApi = (globalThis as Record<PropertyKey, unknown>)[
     Symbol.for("openclaw.playbackTranscodeTestApi")
@@ -179,8 +188,7 @@ describe("playback transcode policy", () => {
       size: 1234,
       mtimeMs: 5678.25,
       ctimeMs: 5679.5,
-      dev: 16,
-      ino: 32,
+      exactIdentity: { dev: 16n, ino: 32n },
     };
     const key = createCacheKey(source);
 
@@ -190,7 +198,9 @@ describe("playback transcode policy", () => {
     expect(createCacheKey({ ...source, size: 1235 })).not.toBe(key);
     expect(createCacheKey({ ...source, mtimeMs: 5679 })).not.toBe(key);
     expect(createCacheKey({ ...source, ctimeMs: 5680 })).not.toBe(key);
-    expect(createCacheKey({ ...source, ino: 33 })).not.toBe(key);
+    expect(
+      createCacheKey({ ...source, exactIdentity: { ...source.exactIdentity, ino: 33n } }),
+    ).not.toBe(key);
   });
 });
 
@@ -255,9 +265,15 @@ describe("resolvePlaybackTranscode", () => {
       videoStreamIndex: 0,
     });
 
+    const currentStat = await fs.stat(source.sourcePath);
     const metadata = await playback.resolvePlaybackMetadataForSource({
       sourcePath: source.sourcePath,
-      sourceStat: await fs.stat(source.sourcePath),
+      sourceStat: {
+        size: currentStat.size,
+        mtimeMs: currentStat.mtimeMs,
+        ctimeMs: currentStat.ctimeMs,
+        exactIdentity: await fs.stat(source.sourcePath, { bigint: true }),
+      },
       mimeType: "video/mp4",
       kind: "video",
     });

@@ -17,18 +17,48 @@ export function safeNormalizeMessage(message: unknown): NormalizedMessage | null
   }
 }
 
+export function readAutomationRun(message: unknown) {
+  const provenance = asRecord(asRecord(message)?.provenance);
+  if (provenance?.kind !== "internal_system" || provenance.sourceTool !== "cron") {
+    return undefined;
+  }
+  const { jobId, runId, sourceSessionKey } = provenance;
+  return typeof jobId === "string" &&
+    jobId &&
+    typeof runId === "string" &&
+    runId &&
+    typeof sourceSessionKey === "string" &&
+    sourceSessionKey
+    ? { jobId, runId, sourceSessionKey }
+    : undefined;
+}
+
 function messageIsForwardedBoundary(message: unknown): boolean {
   const provenance = asRecord(asRecord(message)?.provenance);
   return (
     (provenance?.kind === "inter_session" && provenance.sourceTool === "sessions_send") ||
-    (provenance?.kind === "internal_system" &&
-      provenance.sourceTool === "cron" &&
-      Boolean(provenance.jobId && provenance.runId && provenance.sourceSessionKey))
+    Boolean(readAutomationRun(message))
   );
 }
 
 export function assistantGroupIsForwardedBoundary(group: MessageGroup): boolean {
   return group.messages.some(({ message }) => messageIsForwardedBoundary(message));
+}
+
+export function isInterSessionMessage(message: unknown): boolean {
+  const provenance = asRecord(asRecord(message)?.provenance);
+  return provenance?.kind === "inter_session";
+}
+
+export function isSessionActivityGroup(group: MessageGroup): boolean {
+  return (
+    group.role === "assistant" &&
+    !group.isStreaming &&
+    group.messages.length > 0 &&
+    group.messages.every(
+      ({ message }) => isInterSessionMessage(message) || readAutomationRun(message),
+    )
+  );
 }
 
 // Display attribution also accepts projected source metadata; turn ownership

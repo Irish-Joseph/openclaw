@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { managedWorktrees } from "../agents/worktrees/service.js";
 import {
   initializeManagedWorktreeTestRepository,
@@ -21,20 +22,18 @@ import {
   runExclusiveSessionLifecycleMutation,
 } from "../sessions/session-lifecycle-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
-import {
-  ensureGatewayOwnerProfile,
-  ensureProfileForEmail,
-  setUserProfileRole,
-} from "../state/user-profiles.js";
+import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
+import { prepareUserProfileCatalog } from "../state/user-profile-list.js";
+import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
+import { ensureGatewayOwnerProfile, ensureProfileForEmail } from "../state/user-profiles.js";
+import { prepareGatewayRecipientProfile } from "./expected-profile.js";
 import { createGatewayWorkerPlacementReclaimBarriers } from "./server-worker-placement-reclaim.js";
-import {
-  resolveSessionMutationAuthorization,
-  SessionMutationAuthorizationChangedError,
-} from "./session-sharing.js";
+import { recoverGatewaySession } from "./session-recovery-service.js";
+import { resolveSessionMutationAuthorizationAsync } from "./session-sharing-authorization-async.js";
+import { SessionMutationAuthorizationChangedError } from "./session-sharing.js";
 import {
   resolveCanonicalSessionEntryFromStoreKeys,
-  resolveGatewaySessionStoreTargetWithStore,
+  resolveGatewaySessionStoreTargetInWorker,
 } from "./session-utils.js";
 import { testState, writeSessionStore } from "./test-helpers.js";
 import {
@@ -45,10 +44,25 @@ import {
 } from "./test/server-sessions.test-helpers.js";
 import type { WorkerSessionPlacementRecord } from "./worker-environments/placement-record.js";
 
+const titleGeneration = vi.hoisted(() =>
+  vi.fn<
+    typeof import("../auto-reply/reply/conversation-label-generator.js").generateConversationLabelWithFallback
+  >(),
+);
+
+// Recovery owns identity and continuation; title model behavior has separate boundary coverage.
+vi.mock("../auto-reply/reply/conversation-label-generator.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../auto-reply/reply/conversation-label-generator.js")>()),
+  generateConversationLabelWithFallback: titleGeneration,
+}));
+
+// Reverse hook order joins accepted fixture work before draining global owners.
+afterEach(() => drainGlobalSingletonLifecycleState());
+
 const { createSessionStoreDir } = setupGatewaySessionsHandlerTestHarness();
 
-afterEach(() => {
-  closeOpenClawStateDatabaseForTest();
+beforeEach(() => {
+  titleGeneration.mockReset().mockResolvedValue("Recovered session");
 });
 
 function recoveryWorkerPlacement(params: {
@@ -156,6 +170,26 @@ async function sessionWorktree(dir: string, name: string, sessionKey: string) {
   };
 }
 
+test("recovery source reads and commit guards execute no host SQLite", async () => {
+  const fixture = await recoveryFixture("worker-routed-recovery");
+  const cfg = getRuntimeConfig();
+  const sql = observeHostDataSql();
+  try {
+    const result = await recoverGatewaySession({
+      cfg,
+      key: fixture.sourceKey,
+      agentId: "main",
+      workerPlacementContext: {},
+      launchContinuation: async () => ({ status: "started", runId: "recovery-proof" }),
+    });
+    expect(result).toMatchObject({ ok: true, created: true });
+    expect(sql.queries).toEqual([]);
+  } finally {
+    sql.restore();
+  }
+  expect(fixture.source()?.mainRestartRecovery?.tombstone?.recoveredSessionKey).toBeDefined();
+});
+
 test("sessions.recover settles its active placement before archiving a real session-owned worktree", async () => {
   const { dir, storePath } = await createSessionStoreDir();
   const sourceKey = "agent:main:dashboard:recovery-cloud-active";
@@ -181,12 +215,13 @@ test("sessions.recover settles its active placement before archiving a real sess
     cancelSessionWork: vi.fn(async () => {}),
     placements: {
       get: () => placement,
+      getAsync: async () => placement,
       waitForTurnClaimRelease: vi.fn(async () => {}),
     },
     loadSessionRuntime: async () => ({
       managedWorktrees,
       resolveCanonicalSessionEntryFromStoreKeys,
-      resolveGatewaySessionStoreTargetWithStore,
+      resolveGatewaySessionStoreTargetInWorker,
     }),
     revokeSessionAuthority: vi.fn(),
   });
@@ -200,7 +235,7 @@ test("sessions.recover settles its active placement before archiving a real sess
         ...request,
         authorize,
         beforeDrain,
-        begin: () => {
+        begin: async () => {
           placement = recoveryWorkerPlacement({
             sessionId: sourceSessionId,
             sessionKey: sourceKey,
@@ -261,11 +296,13 @@ test("sessions.recover settles its active placement before archiving a real sess
     archivedAt: expect.any(Number),
     worktree: { id: worktree.id },
   });
-  expect(managedWorktrees.findLiveByOwner("session", sourceKey)).toMatchObject({
+  expect(await managedWorktrees.findLiveByOwner("session", sourceKey)).toMatchObject({
     id: worktree.id,
     ownerId: sourceKey,
   });
-  expect(managedWorktrees.findLiveByOwner("session", recovered.payload?.key ?? "")).toBeUndefined();
+  expect(
+    await managedWorktrees.findLiveByOwner("session", recovered.payload?.key ?? ""),
+  ).toBeUndefined();
   expect(
     loadSessionEntry({
       agentId: "main",
@@ -320,7 +357,7 @@ test.each(["before-interrupt", "before-drain"] as const)(
           })
         : undefined;
     releaseAdmission = () => admission?.release();
-    const begin = vi.fn(() => ({ ...placement, state: "draining" as const }));
+    const begin = vi.fn(async () => ({ ...placement, state: "draining" as const }));
     const reclaim = vi.fn(async () => {
       throw new Error("ineligible worker must not be reclaimed");
     });
@@ -328,6 +365,7 @@ test.each(["before-interrupt", "before-drain"] as const)(
       cancelSessionWork: vi.fn(async () => {}),
       placements: {
         get: () => placement,
+        getAsync: async () => placement,
         waitForTurnClaimRelease: async () => {
           if (phase === "before-drain") {
             await wait();
@@ -341,7 +379,7 @@ test.each(["before-interrupt", "before-drain"] as const)(
         return {
           managedWorktrees,
           resolveCanonicalSessionEntryFromStoreKeys,
-          resolveGatewaySessionStoreTargetWithStore,
+          resolveGatewaySessionStoreTargetInWorker,
         };
       },
       revokeSessionAuthority: vi.fn(),
@@ -491,6 +529,7 @@ test("sessions.recover rolls over one tombstone and returns its continuation out
         modelSelectionLocked: true,
         pinnedAt: 1,
         sandbox: "required",
+        communication: { send: "never", receive: "ask" },
         spawnedCwd: "/tmp/recovered-worktree",
         mainRestartRecovery: {
           cycleId: "cycle-tombstoned",
@@ -536,7 +575,7 @@ test("sessions.recover rolls over one tombstone and returns its continuation out
   });
   const successorKey = recovered.payload?.key ?? "";
   const successorSessionId = recovered.payload?.sessionId ?? "";
-  expect(concurrentRetry).toMatchObject({
+  expect(concurrentRetry, JSON.stringify(concurrentRetry)).toMatchObject({
     ok: true,
     payload: {
       key: successorKey,
@@ -552,6 +591,7 @@ test("sessions.recover rolls over one tombstone and returns its continuation out
     previousSessionId: sourceSessionId,
     providerOverride: "openai",
     sandbox: "required",
+    communication: { send: "never", receive: "ask" },
     spawnedCwd: "/tmp/recovered-worktree",
   });
   const archivedSource = loadSessionEntry({ agentId: "main", sessionKey: sourceKey, storePath });
@@ -589,7 +629,7 @@ test("sessions.recover rolls over one tombstone and returns its continuation out
     agentId: "main",
     key: sourceKey,
   });
-  expect(repeated).toMatchObject({
+  expect(repeated, JSON.stringify(repeated)).toMatchObject({
     ok: true,
     payload: {
       key: successorKey,
@@ -621,6 +661,7 @@ test.each([
     if (recovering && !systemActor) {
       setUserProfileRole(recovering.id, "requester");
     }
+    using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
     const sourceKey = "agent:main:dashboard:creator-policy-recovery";
     const sourceStamp = {
       createdVia: "operator" as const,
@@ -677,8 +718,11 @@ test.each([
       context: {
         getRuntimeConfig: () =>
           identity === "owner" ? { ...cfg, gateway: { ...cfg.gateway, roles: undefined } } : cfg,
+        getCommittedRuntimeConfig: () =>
+          identity === "owner" ? { ...cfg, gateway: { ...cfg.gateway, roles: undefined } } : cfg,
       },
     };
+    prepareGatewayRecipientProfile(request.client);
     type RecoveryPayload = { key: string; continuation: { status: string } };
     const recovered = await directSessionReq<RecoveryPayload>(
       "sessions.recover",
@@ -724,6 +768,7 @@ test("sessions.recover cannot create a successor on an agent excluded by the cal
   const { storePath } = await createSessionStoreDir();
   const profile = ensureProfileForEmail("restricted-session-recovery@example.com");
   setUserProfileRole(profile.id, "guest");
+  using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
   const key = "agent:main:dashboard:role-denied-recovery";
   await writeSessionStore({
     entries: {
@@ -807,12 +852,13 @@ test("sessions.recover revalidates participation at the recovery writer commit",
   } as never;
   // Use an already-registered single-key mutation to isolate handler/writer propagation from
   // the separate sessions.recover registry regression covered at the router boundary.
-  const authorization = resolveSessionMutationAuthorization({
+  const authorization = await resolveSessionMutationAuthorizationAsync({
     client,
     method: "sessions.reset",
     requestParams: { key: sourceKey, agentId: "main" },
     context: { getRuntimeConfig } as never,
   });
+  using _ = { [Symbol.dispose]: () => authorization.authorization?.release?.() };
   expect(authorization.error).toBeNull();
   if (!authorization.authorization) {
     throw new Error("failed to capture recovery source participation");
@@ -820,7 +866,7 @@ test("sessions.recover revalidates participation at the recovery writer commit",
 
   const mutationEntered = createDeferredCore();
   const releaseMutation = createDeferredCore();
-  const heldMutation = runExclusiveSessionLifecycleMutation({
+  const heldMutation = runExclusiveSessionLifecycleMutation("recover", {
     scope: scope.storePath,
     identities: [sourceKey, sourceSessionId],
     run: async () => {
