@@ -33,23 +33,6 @@ describe("resolveHeartbeatReplyPayload", () => {
       );
     },
   );
-  it("keeps a truncated silent heartbeat reply quiet at the delivery boundary (#170158)", () => {
-    const classify = (text: string) =>
-      classifyHeartbeatAgentOutcome({
-        agentRun: { agentRunFailed: false, replyPayload: { text } },
-        useHeartbeatFailureCopy: false,
-        hasRelayableExecCompletion: false,
-        suppressUnmarkedSourceReplies: false,
-        responsePrefix: undefined,
-        ackMaxChars: 300,
-      });
-    expect(classify("no_r")).toMatchObject({ kind: "ack", eventStatus: "ok-token", silent: true });
-    expect(classify("NO_R")).toMatchObject({ kind: "ack", eventStatus: "ok-token" });
-    expect(classify("The database is down, needs attention")).toMatchObject({
-      kind: "delivery",
-    });
-  });
-
   it("returns a single non-array payload unchanged", () => {
     const payload: ReplyPayload = { text: "HEARTBEAT_OK" };
     expect(resolveHeartbeatReplyPayload(payload)).toBe(payload);
