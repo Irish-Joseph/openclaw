@@ -8,6 +8,7 @@ import { createManagedHandoffBuildConfigs } from "../scripts/lib/managed-handoff
 import { runtimeProcessBuildEntries } from "../scripts/lib/runtime-process-build-entries.mts";
 import { buildPackageDistEntriesFromExports } from "../scripts/lib/workspace-package-entries.mts";
 import { controlUiSource } from "../src/plugins/package-manifest.js";
+import { compileViteConfigConsumers } from "./knip-vite-consumers.mjs";
 
 const BUNDLED_PLUGIN_ROOT_DIR = "extensions";
 
@@ -36,6 +37,8 @@ const repositoryScriptEntries = [
   "apps/linux/scripts/test-inline-browser.mjs!",
   // Linux App CI executes the injected native-auth bridge tests through Node.
   "apps/linux/scripts/test-native-control-auth.mjs!",
+  // The proof-video skill invokes these image and video CLIs by path.
+  "scripts/annotate-proof-image.mts!",
   "scripts/render-proof-video.mts!",
   "scripts/ci-shard-timings-refresh.mts!",
   // db:postgres:gen/check invoke this generator through the source loader.
@@ -459,6 +462,9 @@ const rootEntries = [
   // audit roots once accept-input, transcript, and delivery callers activate it.
   "src/config/sessions/session-actor-contract.ts!",
   "src/config/sessions/session-actor-durable.ts!",
+  // PR #174294 stages the local credential owner without activating production consumers.
+  // Remove this audit root when the client credential cutover wires those consumers.
+  "src/infra/client-credential-store.ts!",
   // Startup metadata renders source help through a generated child module's file-URL import.
   "src/cli/program/root-help.ts!",
   // Packaged postinstall imports this private compiled entry before stage activation.
@@ -680,6 +686,10 @@ function workspacePackage(packageDir: string, extraEntries: readonly string[] = 
 }
 
 function compileDynamicMjsConsumers(source: string, filePath: string): string {
+  // A custom TS compiler disables Knip's declaration-to-source mapping.
+  if (path.resolve(filePath) === path.resolve("config/knip-vite-consumers.mjs")) {
+    return compileViteConfigConsumers(source, filePath);
+  }
   if (path.resolve(filePath) === path.resolve("scripts/ci-build-manifest.mjs")) {
     // The trusted manifest resolves this planner from the target checkout by file URL.
     return source.replace(
@@ -925,6 +935,7 @@ const config = {
         ".github/actions/**/*.{js,mjs,cjs,ts,mts,cts}!",
         "apps/**/*.{js,mjs,cjs,ts,mts,cts}!",
         "config/**/*.{ts,mts,cts}!",
+        "config/knip-vite-consumers.mjs!",
         "docs/**/*.js!",
         "security/**/*.{js,mjs,cjs,ts,mts,cts}!",
         "skills/**/*.{js,mjs,cjs,ts,mts,cts}!",

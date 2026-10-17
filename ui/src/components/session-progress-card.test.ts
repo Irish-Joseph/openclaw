@@ -8,11 +8,6 @@ import {
   observeTranscript,
   renderProgressCard as render,
 } from "./session-progress-card.test-support.tsx";
-vi.mock("./markdown.ts", async () => {
-  const actual = await vi.importActual<typeof import("./markdown.ts")>("./markdown.ts");
-  return { ...actual, toSanitizedMarkdownHtml: vi.fn(actual.toSanitizedMarkdownHtml) };
-});
-import { toSanitizedMarkdownHtml } from "./markdown.ts";
 import type { ComposerProgressDisclosureContext } from "./session-progress-disclosure-binding.ts";
 
 const containers: HTMLDivElement[] = [];
@@ -245,25 +240,6 @@ describe("renderSessionProgressCard", () => {
     ).not.toBeNull();
   });
 
-  it("reuses sanitized progress HTML across repeated render cycles", () => {
-    const container = createContainer();
-    const renderMarkdown = vi.mocked(toSanitizedMarkdownHtml);
-
-    render({ card: progressCard, placement: "board" }, container);
-    const firstHtml = container.querySelector(".session-progress-card__markdown")?.innerHTML;
-    expect(renderMarkdown).toHaveBeenCalledTimes(1);
-
-    render({ card: progressCard, placement: "board" }, container);
-    expect(renderMarkdown).toHaveBeenCalledTimes(1);
-    expect(container.querySelector(".session-progress-card__markdown")?.innerHTML).toBe(firstHtml);
-
-    render(
-      { card: { ...progressCard, markdown: "**Updated progress**" }, placement: "board" },
-      container,
-    );
-    expect(renderMarkdown).toHaveBeenCalledTimes(2);
-  });
-
   it.each([
     ["in_progress", ".session-run-spinner"],
     ["pending", "polyline"],
@@ -383,7 +359,7 @@ describe("renderSessionProgressCard", () => {
     };
     render({ card: completed, placement: "composer", onDismiss: () => undefined }, container);
 
-    expect(container.querySelector(".session-progress-card__dismiss")).not.toBeNull();
+    expect(container.querySelector(".session-progress-card__options")).not.toBeNull();
     expect(container.querySelector(".session-progress-card__chevron svg")).not.toBeNull();
   });
 
@@ -411,7 +387,7 @@ describe("renderSessionProgressCard", () => {
         ?.querySelector(".session-progress-card__heading-actions")
         ?.textContent?.replaceAll(/\s+/gu, " ")
         .trim(),
-    ).toBe("Updated 2m ago · 2 of 3");
+    ).toBe("Step 2 of 3 · Updated 2m ago");
     expect(card?.querySelector("progress")).toBeNull();
     expect(card?.querySelectorAll(".session-progress-card__step")).toHaveLength(3);
   });

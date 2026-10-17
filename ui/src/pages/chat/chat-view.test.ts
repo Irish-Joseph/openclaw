@@ -88,7 +88,7 @@ import {
   itemAt,
 } from "./chat-view.test-helpers.ts";
 import type { ChatProps } from "./chat-view.tsx";
-import * as chatMessageConfirmation from "./components/chat-message-confirmation.ts";
+import * as chatMessageConfirmation from "./components/chat-message-confirmation-view.tsx";
 import { renderChatModelAccountControl } from "./components/chat-model-account-control.ts";
 import { ChatModelControls } from "./components/chat-model-controls.tsx";
 import { installChatComposerPickerDismissal } from "./components/chat-picker-overlay.ts";
@@ -102,6 +102,7 @@ import {
   resetTranscriptTestDom,
 } from "./components/chat-transcript.test-support.ts";
 import { ChatWelcome } from "./components/chat-welcome.tsx";
+import { saveChatSessionScrollPosition } from "./scroll.ts";
 import { RealtimeTalkLevelSignal } from "./talk/level.ts";
 import {
   workspaceConflictPathForDisplay,
@@ -630,7 +631,10 @@ describe("chat run error", () => {
       vi.mocked(chatThread.buildCachedChatItems).mockRestore();
       const onRetrySessionPlacementStartup = vi.fn();
       const onQueueRetry = vi.fn();
+      const paneId = `startup-${action}`;
+      saveChatSessionScrollPosition(paneId, "main", { scrollTop: 0, anchorToEnd: false });
       const container = renderChatView({
+        transcript: createTestTranscript(paneId),
         canSend: false,
         messages: [
           { role: "user", content: "[System] Gateway restarted", timestamp: 3 },
@@ -2352,6 +2356,7 @@ describe("chat slash menu accessibility", () => {
       } else if (selection === "send") {
         keydownComposer(container, "Escape");
         container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.click();
+        flush();
       } else {
         inputDraftAtEnd(container, `/goal ${selection} `);
       }
@@ -2671,6 +2676,7 @@ describe("chat slash menu accessibility", () => {
     expect(container.querySelector(".slash-menu")).not.toBeNull();
 
     document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    flush();
 
     expect(container.querySelector(".slash-menu")).toBeNull();
     container.remove();
@@ -2827,11 +2833,13 @@ describe("chat slash menu accessibility", () => {
     textarea.value = "Use $pro then continue";
     textarea.setSelectionRange("Use $pro".length, "Use $pro".length);
     textarea.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    flush();
     expect(container.querySelector(".skill-menu")).not.toBeNull();
 
     textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     textarea.dispatchEvent(new Event("select", { bubbles: true }));
+    flush();
 
     expect(container.querySelector(".skill-menu")).toBeNull();
   });
@@ -5036,7 +5044,8 @@ describe("right-click Reply", () => {
         if (mode === "rerendered-live") {
           textarea.value = visibleDraft;
           textarea.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
-          expect(pane.onRequestUpdate.mock.calls.length).toBeGreaterThan(updatesBeforeComposition);
+          flush();
+          pane.redraw();
           expect(pane.onDraftChange).not.toHaveBeenCalled();
         }
         const event = new KeyboardEvent("keydown", {

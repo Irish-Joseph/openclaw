@@ -322,8 +322,12 @@ admission without reentering SQLite on the host. These checks belong to each
 startup request; reusing the native actor for ordinary work does not retain them.
 Committed deletion invalidates the captured pending admission before observers
 run, while rollback and replacement admission owners remain unaffected. Startup
-migration preserves its pending-versus-completed cleanup diagnostics. No schema,
-retention, permission, or update migration changes are required.
+migration reads deletion status, retained paths, and registered owners once per
+startup pass through the shared-state worker, preserving pending-versus-completed
+cleanup diagnostics. A later startup reads fresh facts; an overlapping deletion
+is enforced by database admission and cleanup owners without repeating discovery
+between maintenance phases. No schema, retention, permission, or update migration
+changes are required.
 
 Callers should request domain operations, such as claiming a cron run or
 appending a transcript report, from the store that owns the invariant. That
@@ -1677,14 +1681,13 @@ Each new operation uses current rows or facts invalidated by owning-writer recei
 These changes preserve
 schemas, retention, synchronous cold-load compatibility, and update behavior.
 
-The native Gateway host supplies snapshot preparation through its registered
-config owner. Those reads prepare deferred migration and plugin metadata with the
-existing shared-state actor. Each read captures one exact owner before awaiting
-preparation and rejects its result if that owner closes; failures never select a
-replacement or switch readers. Direct servers and standalone config readers keep
-their existing execution path unless their host explicitly supplies this operation.
+Gateway, direct-server, and standalone asynchronous config snapshots share the
+same validation, materialization, and plugin metadata preparation owners. Metadata
+reads use the existing asynchronous state reader without a host-supplied adapter.
+Unobserved snapshots preserve source artifacts through metadata completion;
+config writes retain their live source authority and runtime activation owner.
 Missing-file defaults still load plugin metadata only when those defaults need it.
-The operation changes no schema, persisted representation, or publication authority.
+This routing changes no schema, persisted representation, or publication authority.
 
 Meeting transcript identity, descriptor, notes, summary, utterance, and export-ownership reads use
 the shared-state worker. Typed commands call the existing synchronous query
@@ -2071,11 +2074,14 @@ post-writer lifecycle checks. Retention rules, cap buffering, forced cleanup,
 and active-work, ancestor, and lifecycle protection remain unchanged. No schema
 or migration change is required.
 
-After archive preparation, session deletion rereads its target before admitting
-the final reclamation worker. A missing or changed target returns the existing
-entry-mismatch result without starting that worker, while preserving archives
-already committed by the deletion. Admitted workers still recheck the target
-and current authority inside their deletion transaction.
+Session deletion checks its target and current authority inside the deletion
+transaction. A missing or changed target returns the existing entry-mismatch
+result while preserving archives already committed by the deletion. Exact
+metadata-only deletion with an expected entry uses the admitted session writer,
+without a separate planning read or archive worker. Cron run alias cleanup uses
+that path and keeps the stable session's transcript. Native-session participants,
+pending-delivery protection, and lease-loss refusal remain in the lifecycle owner.
+The transaction passes its validated rows to deletion instead of reading them again.
 
 Prepared session-store updates, entry replacements, and lifecycle upserts use
 the same admission for cold snapshot reads and actual commits, retaining their
@@ -2348,7 +2354,8 @@ Shared-state database drainage also joins resources registered while an earlier
 resource is closing. Native retirement waits for those resources; failed cleanup
 remains owned for a later explicit retry.
 Maintenance cleanup joins work started by earlier cleanup phases before closing
-the resources it uses. Clients adopted by actor retirement share its cleanup result.
+the resources it uses. The broker joins every client's accepted commands and native
+close; shared-state owners await that result without a second adoption protocol.
 
 Memory managers admit writes on their exact borrowed agent connection. Provider
 calls and source preparation run before admission; generated-cache and source
@@ -2782,7 +2789,7 @@ yielding between batches. Cache writes wait outside the agent writer FIFO until
 foreground work drains, then commit one session at a time. Report reads use their
 separate worker lane and return partial or stale totals during backfill. Restart
 rediscovers unfinished sessions from their committed checkpoints.
-Expected refresh cancellation during shutdown logs at debug level; refresh or cleanup failures still warn.
+Refresh or cleanup failures still warn.
 After in-process DDL, worker admission publishes its validated schema even if a
 retained reader adopted another wrapper of the previous shared receipt while it
 was pending. The received schema and physical database proof must remain valid;

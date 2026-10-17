@@ -12,10 +12,10 @@ from: DMs, group chats, cron jobs, etc. All session state is owned by the
 **gateway**; UI clients query the gateway for session data.
 
 Session lists reconcile invalidated metadata before returning rows. If a native
-session changes ownership during a list read, the Gateway retries its runtime
-metadata once. Continued changes temporarily use the configured model metadata
-for that row while other sessions remain available. The next list read retries
-its native metadata.
+session changes ownership during a list read, that row uses the
+configured model metadata while other sessions remain available. Native metadata
+is refreshed when that row is next invalidated; an unchanged list read does not
+retry it.
 
 To continue the same Gateway-owned session in the Control UI, terminal, or a
 coding harness, see [Session synchronization and attachment](/concepts/session-attachment).
@@ -283,6 +283,9 @@ the original caller's permission to run worktree setup scripts.
 
 When replaying an interrupted turn, recovery preserves its recorded tool calls
 and results, including nested tool activity, and reuses the original user message.
+Explicit nonfinal message-tool progress (`final: false`) recorded by the same run
+does not close that turn; recovery preserves the visible update without sending it
+back to the model as an answer.
 A restart-aborted embedded response retains its already-streamed text as an
 interrupted assistant message when the transcript writer is still available.
 Unfinished tool calls in that response are discarded before persistence.
@@ -301,13 +304,16 @@ This also covers parent turns started by subagent completion or pause notices.
 An interrupted parent continues independently of later child completions, and a
 retry of the same notice joins that recovery instead of starting the turn again.
 Parents still waiting after yielding to children remain owned by their child batch.
-Startup waits for subagent Gateway bindings and completion authority restoration
-before attempting to resume these parent turns. If the original completion cohort
-or its operator authority cannot be restored, recovery records one terminal
-interruption in the transcript and settles the old input. Later startup passes
-and restarts skip it. The session remains available for a fresh authenticated
-message; recovery never substitutes system authority. Temporary startup, binding,
-or access-policy availability failures keep their recovery claims and retry.
+Once a parent turn has its own recorded operator source, recovery revalidates that
+source against current policy using the parent's exact session claim. Changes to
+the original child batch, including settlement or cleanup, do not cancel that
+admitted parent input. Older requester inputs without a recorded operator source
+still reconcile their original completion cohort. If that source cannot be
+restored, recovery records one terminal interruption in the transcript and settles
+the old input. Later startup passes and restarts skip it. The session remains
+available for a fresh authenticated message; recovery never substitutes system
+authority. Temporary startup, binding, or access-policy availability failures keep
+their recovery claims and retry.
 
 If a delegated turn's sender authority cannot be reconstructed, automatic recovery
 stops with a recorded reason and a visible notice in the transcript or original

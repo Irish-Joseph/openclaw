@@ -3,12 +3,17 @@ import type {
   EngineConnection,
   SearchSchema,
 } from "openclaw/plugin-sdk/database-engine-worker-runtime";
-import { isPostgresSqlConnection } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import {
+  isPostgresSqlConnection,
+  MEMORY_INDEX_DERIVED_TABLES,
+  MEMORY_INDEX_STATE_TABLE,
+} from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { readOpenClawAgentDatabaseIdentity } from "openclaw/plugin-sdk/sqlite-runtime";
 import {
   bindSqliteWorkerDatabase,
   executeSqliteQuerySync,
   getNodeSqliteKysely,
+  tableExists,
 } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import { hasMemorySessionTombstone } from "../memory-session-tombstones.js";
 import { MemoryIndexRevisionConflictError } from "./manager-db-kernel.js";
@@ -18,6 +23,10 @@ import {
   pruneMemoryEmbeddingCache,
   upsertMemoryEmbeddingCache,
 } from "./manager-embedding-cache.js";
+import {
+  upgradeMemoryIndexProviderKey,
+  writeMemoryIndexMetadata,
+} from "./manager-index-metadata.js";
 import { readMemoryIndex } from "./manager-index-read.js";
 import type {
   MemoryEmbeddingCacheEntry,
@@ -26,11 +35,7 @@ import type {
   MemoryPublicationResult,
 } from "./manager-publication-task.js";
 import type { MemoryIndexMeta } from "./manager-reindex-state.js";
-import {
-  MEMORY_INDEX_META_KEY,
-  readMemoryDatabaseFacts,
-  type MemoryDatabaseFacts,
-} from "./manager-retrieval-read.js";
+import { readMemoryDatabaseFacts, type MemoryDatabaseFacts } from "./manager-retrieval-read.js";
 import { memoryTextSearchSchema, memoryVectorSearchSchema } from "./manager-search-schema.js";
 import {
   MemorySourceIndexKernel,
@@ -221,17 +226,38 @@ export function bindPostgresMemoryPublication(
     rebuilding!.hasIndexedChunks ||= hasRows;
     rebuilding!.hasSemanticChunks ||= hasRows && source.model !== "fts-only";
   };
-  const writeMeta = (meta: MemoryIndexMeta) =>
-    executeSqliteQuerySync(
-      db,
-      getNodeSqliteKysely<{ memory_index_meta: { key: string; value: string } }>(db)
-        .insertInto("memory_index_meta")
-        .values({ key: MEMORY_INDEX_META_KEY, value: JSON.stringify(meta) })
-        .onConflict((oc) => oc.column("key").doUpdateSet({ value: JSON.stringify(meta) })),
-    );
   const execute: Parameters<
     typeof bindSqliteWorkerDatabase<MemoryPublicationOperations>
   >[1]["execute"] = (command) => {
+    if (command.type === "database.reset") {
+      return write(() => {
+        const query = getNodeSqliteKysely<
+          Record<(typeof MEMORY_INDEX_DERIVED_TABLES)[number], unknown> & {
+            memory_index_state: { id: number; revision: number };
+          }
+        >(db);
+        let changed = false;
+        // Admitted facts include optional vector projections; generated text columns
+        // disappear with their source rows while the index definitions stay admitted.
+        for (const table of MEMORY_INDEX_DERIVED_TABLES) {
+          if (table === MEMORY_INDEX_STATE_TABLE || !tableExists(db, table)) {
+            continue;
+          }
+          const result = executeSqliteQuerySync(db, query.deleteFrom(table));
+          changed ||= (result.numAffectedRows ?? 0n) > 0n;
+        }
+        if (changed) {
+          executeSqliteQuerySync(
+            db,
+            query
+              .updateTable(MEMORY_INDEX_STATE_TABLE)
+              .set((eb) => ({ revision: eb("revision", "+", 1) }))
+              .where("id", "=", 1),
+          );
+        }
+        return changed;
+      });
+    }
     if (stageId && !stages.has(stageId) && command.type !== "database.stage.start") {
       throw new Error("Memory reindex connection was lost; retry the full reindex.");
     }
@@ -340,7 +366,7 @@ export function bindPostgresMemoryPublication(
             fts: { enabled: true, available: true },
           }).replaceRows(source, decode<MemorySourceIndexRow>(fragments()));
         }
-        writeMeta(metadata);
+        writeMemoryIndexMetadata(db, metadata);
         if (command.input.vectorIndexComplete) {
           markMemoryVectorIndexClean(db);
         }
@@ -386,6 +412,11 @@ export function bindPostgresMemoryPublication(
       stageKind = undefined;
       return undefined;
     }
+    if (command.type === "index.upgradeProviderKey") {
+      return rebuilding
+        ? { ok: true, value: false }
+        : write(() => upgradeMemoryIndexProviderKey(db, command.input));
+    }
     if (command.type === "index.writeMetadata") {
       return write(() => {
         if (rebuilding) {
@@ -393,7 +424,7 @@ export function bindPostgresMemoryPublication(
           rebuilding.meta = metadata;
           rebuilding.serialized = JSON.stringify(metadata);
         } else {
-          writeMeta(command.input);
+          writeMemoryIndexMetadata(db, command.input);
         }
       });
     }

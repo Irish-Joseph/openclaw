@@ -9,6 +9,7 @@ import {
   getSkillCommandCompletions,
   replaceSlashCommands,
 } from "../../lib/chat/commands.ts";
+import { waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
 import { adjustTextareaHeight } from "../chat/components/chat-composer-dom.ts";
 import { createNewSessionComposerTextarea } from "./composer-controller.ts";
@@ -123,6 +124,7 @@ describe("new-session composer keyboard submission", () => {
     textarea.value = "/";
     textarea.setSelectionRange(1, 1);
     textarea.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    flush();
 
     expect(composer.querySelector("#chat-new-session-slash-menu-listbox")?.textContent).toContain(
       "/test-command",
@@ -139,7 +141,7 @@ describe("new-session composer keyboard submission", () => {
 
   it.each(["keyboard", "pointer"])(
     "submits a selected non-skill command argument with %s",
-    (selection) => {
+    async (selection) => {
       replaceSlashCommands([
         {
           key: "mode",
@@ -165,14 +167,19 @@ describe("new-session composer keyboard submission", () => {
           new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }),
         );
       } else {
+        flush();
         composer.querySelector<HTMLElement>(".slash-menu-item")?.click();
       }
 
+      flush();
       expect(onInput).toHaveBeenLastCalledWith("/mode ");
-      const fastOption = Array.from(
-        composer.querySelectorAll<HTMLElement>(".slash-menu-item"),
-      ).find((item) => item.querySelector(".slash-menu-name")?.textContent?.trim() === "fast");
-      expect(fastOption).toBeInstanceOf(HTMLElement);
+      const fastOption = await waitForSolid(() => {
+        const option = Array.from(composer.querySelectorAll<HTMLElement>(".slash-menu-item")).find(
+          (item) => item.querySelector(".slash-menu-name")?.textContent?.trim() === "fast",
+        );
+        expect(option).toBeInstanceOf(HTMLElement);
+        return option;
+      });
       if (selection === "keyboard") {
         textarea.dispatchEvent(
           new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }),
@@ -221,7 +228,7 @@ describe("new-session composer keyboard submission", () => {
       ],
     });
     await waitForFast(() => {
-      expect(textareaController.skillMenuState.skillCommandRefreshPending).toBe(false);
+      expect(textareaController.skillMenu.state.skillCommandRefreshPending).toBe(false);
     });
     expect(composer.querySelector(".skill-menu")?.textContent ?? "").not.toContain("writer_only");
     expect(getSkillCommandCompletions("writer_only")).toEqual([]);
@@ -269,7 +276,7 @@ describe("new-session composer keyboard submission", () => {
       ],
     });
     await waitForFast(() => {
-      expect(textareaController.skillMenuState.skillCommandRefreshPending).toBe(false);
+      expect(textareaController.skillMenu.state.skillCommandRefreshPending).toBe(false);
     });
     expect(composer.querySelector(".skill-menu")?.textContent ?? "").not.toContain(
       "previous_client_only",
@@ -298,6 +305,7 @@ describe("new-session composer keyboard submission", () => {
     textarea.value = "$";
     textarea.setSelectionRange(1, 1);
     textarea.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    flush();
 
     expect(composer.querySelector(".skill-menu")?.textContent).toContain("release_notes");
     textarea.dispatchEvent(
@@ -323,9 +331,11 @@ describe("new-session composer keyboard submission", () => {
     textarea.value = "$";
     textarea.setSelectionRange(1, 1);
     textarea.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    flush();
     expect(composer.querySelector(".skill-menu")).not.toBeNull();
 
     rerenderForDraftRoute("draft:two", "replacement task");
+    flush();
     expect(composer.querySelector(".skill-menu")).toBeNull();
 
     textarea.dispatchEvent(
@@ -362,11 +372,13 @@ describe("new-session composer keyboard submission", () => {
     textarea.value = "Use /release_ and /office_";
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     textarea.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    flush();
     expect(composer.querySelector(".slash-menu")?.textContent).toContain("/office_hours");
 
     const firstTokenCaret = "Use /release_".length;
     textarea.setSelectionRange(firstTokenCaret, firstTokenCaret);
     textarea.dispatchEvent(new Event("select", { bubbles: true }));
+    flush();
     expect(composer.querySelector(".slash-menu")?.textContent).toContain("/release_notes");
     textarea.dispatchEvent(
       new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }),

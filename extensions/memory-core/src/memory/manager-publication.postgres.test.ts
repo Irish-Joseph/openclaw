@@ -1,3 +1,4 @@
+import { channel } from "node:diagnostics_channel";
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -8,10 +9,12 @@ import {
   withEngineStoreAdmission,
   type EngineConnection,
 } from "openclaw/plugin-sdk/database-engine-worker-runtime";
-import { isPostgresSqlConnection } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import {
+  encodeMemoryEmbedding,
+  isPostgresSqlConnection,
+} from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { openNodeSqliteDatabase } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { requireMemorySearchDatabase } from "../memory-search-database.js";
 import { MemoryIndexDatabase } from "./manager-database-context.js";
 import {
   memoryEmbeddingCacheBatches,
@@ -21,6 +24,7 @@ import {
 } from "./manager-publication-transfer.js";
 import { bindSqliteWorkerBackend } from "./manager-publication.worker.js";
 import type { MemoryIndexMeta } from "./manager-reindex-state.js";
+import { readMemoryDatabaseFacts } from "./manager-retrieval-read.js";
 import { memoryTextSearchSchema } from "./manager-search-schema.js";
 import type { MemorySourceIndexReplacement } from "./manager-source-index-kernel.js";
 
@@ -237,7 +241,7 @@ describe.skipIf(!connection)("PostgreSQL memory publication worker", () => {
       expect(keyword("orchid")).toEqual([{ path: "memory/orchid.md" }]);
     }));
 
-  it("routes PostgreSQL indexing reads through the publication owner while search stays refused", async () => {
+  it("routes PostgreSQL indexing reads through the publication owner", async () => {
     const command = {
       type: "source.hash",
       input: { source: "memory", path: "memory/host-read.md" },
@@ -257,9 +261,6 @@ describe.skipIf(!connection)("PostgreSQL memory publication worker", () => {
     try {
       const { result } = admitted(() => {
         expect(publishInline(replacement("host-read"))).toMatchObject({ ok: true });
-        expect(() => requireMemorySearchDatabase(database)).toThrow(
-          "PostgreSQL memory indexing is unavailable",
-        );
         return {
           result: manager.read(command, () => {}),
         };
@@ -269,6 +270,117 @@ describe.skipIf(!connection)("PostgreSQL memory publication worker", () => {
       dispatch.mockRestore();
     }
   });
+
+  it("atomically resets derived rows while retaining admitted search schema and revision", () =>
+    admitted(() => {
+      expect(publishInline(replacement("reset-me"))).toMatchObject({ ok: true });
+      expect(backend.execute({ type: "index.writeMetadata", input: metadata })).toMatchObject({
+        ok: true,
+      });
+      expect(
+        backend.execute({
+          type: "cache.write.inline",
+          input: {
+            header: {
+              agentId: "main",
+              provider: { id: "fixture", model: "fixture" },
+              providerKey: "fixture-key",
+            },
+            entries: [{ hash: "reset-cache", embedding: [1, 0, 0] }],
+          },
+        }),
+      ).toMatchObject({ ok: true, value: true });
+      const before = readMemoryDatabaseFacts(database);
+      denyCommit = true;
+      expect(backend.execute({ type: "database.reset", input: undefined })).toMatchObject({
+        ok: false,
+        entered: true,
+        committed: false,
+        error: { message: "publication authority revoked" },
+      });
+      expect(keyword("reset")).toEqual([{ path: "memory/reset-me.md" }]);
+      expect(rows()).toHaveLength(1);
+      expect(backend.execute({ type: "index.facts", input: undefined })).toEqual(before);
+
+      denyCommit = false;
+      const reset = backend.execute({ type: "database.reset", input: undefined });
+      expect(reset).toMatchObject({
+        ok: true,
+        value: true,
+        facts: { meta: null, hasIndexedChunks: false, hasVectorTable: true },
+      });
+      expect(keyword("reset")).toEqual([]);
+      expect(rows()).toEqual([]);
+      expect(pg().prepare("SELECT hash FROM memory_embedding_cache").all()).toEqual([]);
+      expect(pg().prepare("SELECT chunk_id FROM memory_index_chunk_recall_metadata").all()).toEqual(
+        [],
+      );
+      expect(pg().prepare("SELECT chunk_id FROM memory_index_chunk_provenance").all()).toEqual([]);
+      const after = readMemoryDatabaseFacts(database);
+      expect(after.revision).toBeGreaterThan(before.revision);
+      expect(backend.execute({ type: "database.reset", input: undefined })).toMatchObject({
+        ok: true,
+        value: false,
+        facts: { revision: after.revision },
+      });
+      expect(publishInline(replacement("after-reset"))).toMatchObject({ ok: true });
+      expect(keyword("reset")).toEqual([{ path: "memory/after-reset.md" }]);
+      expect(rows()).toHaveLength(1);
+    }));
+
+  it("promotes legacy identity and cache atomically without replacing canonical vectors", () =>
+    admitted(() => {
+      const meta = { ...metadata, providerKey: "legacy" };
+      const command = {
+        type: "index.upgradeProviderKey",
+        input: { meta, providerKey: "canonical" },
+      } as const;
+      expect(backend.execute({ type: "index.writeMetadata", input: meta })).toMatchObject({
+        ok: true,
+      });
+      pg().runTransaction(() => {
+        const insert = pg().prepare(`INSERT INTO memory_embedding_cache
+          (provider, model, provider_key, hash, embedding, dims, updated_at)
+          VALUES ('fixture', 'fixture', ?, ?, ?, 2, ?)`);
+        insert.run("legacy", "move", encodeMemoryEmbedding([0.125, -0]), 100);
+        insert.run("legacy", "shared", encodeMemoryEmbedding([1, 0]), 101);
+        insert.run("canonical", "shared", encodeMemoryEmbedding([0, 1]), 102);
+      });
+      const cacheRows = () =>
+        pg().prepare("SELECT * FROM memory_embedding_cache ORDER BY hash, provider_key").all();
+      const before = cacheRows();
+      expect(
+        backend.execute({
+          ...command,
+          input: { ...command.input, meta: { ...meta, chunkTokens: 200 } },
+        }),
+      ).toMatchObject({ ok: true, value: false, facts: { meta } });
+      expect(cacheRows()).toEqual(before);
+
+      denyCommit = true;
+      expect(backend.execute(command)).toMatchObject({
+        ok: false,
+        entered: true,
+        committed: false,
+        error: { message: "publication authority revoked" },
+      });
+      expect(cacheRows()).toEqual(before);
+      expect(backend.execute({ type: "index.facts", input: undefined })).toMatchObject({ meta });
+
+      denyCommit = false;
+      const upgraded = { ...meta, providerKey: "canonical" };
+      expect(backend.execute(command)).toMatchObject({
+        ok: true,
+        value: true,
+        facts: { meta: upgraded },
+      });
+      expect(cacheRows()).toEqual([{ ...before[0], provider_key: "canonical" }, before[1]]);
+      expect(backend.execute(command)).toMatchObject({
+        ok: true,
+        value: false,
+        facts: { meta: upgraded },
+      });
+    }));
 
   it("retains a private full reindex across short bindings and rolls back a refused commit", () =>
     admitted(() => {
@@ -404,8 +516,16 @@ describe.skipIf(!connection)("PostgreSQL memory publication worker", () => {
       }));
       const batches = [...memoryEmbeddingCacheBatches(entries)];
       expect(batches.length).toBeGreaterThan(1);
-      const queries = vi.spyOn(pg(), "query");
-      let statements: string[];
+      const prepared = vi.spyOn(pg(), "prepare");
+      const statements: string[] = [];
+      const listener = (message: unknown) => {
+        const event = message as { engine: string; sql: string };
+        if (event.engine === "postgres") {
+          statements.push(event.sql);
+        }
+      };
+      const observations = channel("openclaw.database.statement");
+      observations.subscribe(listener);
       try {
         backend.execute({
           type: "cache.stage.start",
@@ -424,9 +544,16 @@ describe.skipIf(!connection)("PostgreSQL memory publication worker", () => {
           ok: true,
           value: true,
         });
+        const reads = prepared.mock.calls
+          .map(([sql]) => sql)
+          .filter((sql) => sql.includes("SELECT ordinal, header, json, last FROM memory_stage_"));
+        expect(reads.length).toBeGreaterThan(0);
+        expect(reads.every((sql) => sql.endsWith("ordinal > ? ORDER BY ordinal LIMIT 32"))).toBe(
+          true,
+        );
       } finally {
-        statements = queries.mock.calls.map(([sql]) => sql);
-        queries.mockRestore();
+        observations.unsubscribe(listener);
+        prepared.mockRestore();
       }
       expect(
         backend.execute({
@@ -441,9 +568,6 @@ describe.skipIf(!connection)("PostgreSQL memory publication worker", () => {
         sql.includes("SELECT ordinal, header, json, last FROM memory_stage_"),
       );
       expect(reads.length).toBeGreaterThan(1);
-      expect(reads.every((sql) => sql.endsWith("ordinal > ? ORDER BY ordinal LIMIT 32"))).toBe(
-        true,
-      );
       expect(statements.some((sql) => /\bATTACH\b|shadow/iu.test(sql))).toBe(false);
     }));
 });

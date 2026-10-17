@@ -13,7 +13,10 @@ import {
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import type { EmbeddedRunAttemptWithReceiptEvidence } from "./attempt-result.js";
 import { EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS } from "./lane-runtime.js";
-import { prepareTerminalWithSettledTurnFinalization } from "./settled-turn-finalization.js";
+import {
+  prepareTerminalWithSettledTurnFinalization,
+  requestSettledTurnFinalizationContext,
+} from "./settled-turn-finalization.js";
 import {
   createSettledFinalizationTestInput,
   createSettledProviderFailureAttempt,
@@ -121,7 +124,9 @@ function settledSuccessfulAttempt(): EmbeddedRunAttemptWithReceiptEvidence {
 let admittedRunContext: AdmittedRunContext;
 
 function finalizationInput(attempt: ReturnType<typeof settledFailedAttempt>) {
-  return createSettledFinalizationTestInput(attempt, admittedRunContext);
+  const input = createSettledFinalizationTestInput(attempt, admittedRunContext);
+  input.terminalBase.runParams.onAttemptTerminalReplaced = vi.fn();
+  return input;
 }
 
 describe("prepareTerminalWithSettledTurnFinalization", () => {
@@ -136,6 +141,49 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     admission.close();
     vi.useRealTimers();
   });
+
+  it.each(["delivered", "pending", "missing"] as const)(
+    "requests settled context only when source delivery is missing (%s)",
+    async (delivery) => {
+      const attempt = settledSuccessfulAttempt();
+      const context = attempt.settledTurnFinalizationContext;
+      attempt.settledTurnFinalizationContext = { source: "unavailable" };
+      const input = finalizationInput(attempt);
+      input.terminalBase.runParams.resolveReplyDelivery = async () => delivery;
+      const capture = vi.fn(async () => context);
+      const assistant = buildEmbeddedRunnerAssistant({
+        content: [{ type: "text", text: "The tools completed successfully." }],
+      });
+      backendMocks.runSettledFinalization.mockResolvedValue({
+        outcome: "answered",
+        result: {
+          assistant,
+          assistantTranscriptOwned: true,
+          preparedTerminalReply: prepareAgentRunTerminalReply({
+            rawText: "The tools completed successfully.",
+          }),
+        },
+      });
+      await requestSettledTurnFinalizationContext(
+        { ...input.terminalBase, ...input.initial, lastRunPromptUsage: input.lastRunPromptUsage },
+        input.finalization,
+        capture,
+      );
+      const result = await prepareTerminalWithSettledTurnFinalization(input);
+      if (delivery === "missing") {
+        expect(capture).toHaveBeenCalledOnce();
+        expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
+        expect(backendMocks.runSettledFinalization.mock.calls[0]?.[1]).toBe(attempt);
+        expect(attempt.settledTurnFinalizationContext).toBe(context);
+        expect(result.finalizationOutcome).toBe("answered");
+        expect(result.attempt.assistantTexts).toEqual(["The tools completed successfully."]);
+      } else {
+        expect(capture).not.toHaveBeenCalled();
+        expect(backendMocks.runSettledFinalization).not.toHaveBeenCalled();
+        expect(result.finalizationOutcome).toBe("not-attempted");
+      }
+    },
+  );
 
   it("does not finalize an empty post-tool turn when media was delivered", async () => {
     const assistant = buildEmbeddedRunnerAssistant({ content: [] });
@@ -187,6 +235,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     const result = await prepareTerminalWithSettledTurnFinalization(input);
 
     expect(result.finalizationOutcome).toBe("failed");
+    expect(input.terminalBase.runParams.onAttemptTerminalReplaced).not.toHaveBeenCalled();
     expect(backendMocks.runSettledFinalization).toHaveBeenCalledTimes(2);
     for (const [preparedAttempt, settledAttempt] of backendMocks.runSettledFinalization.mock
       .calls) {
@@ -427,6 +476,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       });
       const result = await prepareTerminalWithSettledTurnFinalization(input);
       expect(backendMocks.runSettledFinalization).toHaveBeenCalledTimes(silent ? 1 : 2);
+      expect(input.terminalBase.runParams.onAttemptTerminalReplaced).not.toHaveBeenCalled();
       if (!errorText) {
         expect(result.finalizationOutcome).toBe("answered");
         expect(result.attempt.assistantTexts).toEqual([]);
@@ -477,6 +527,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     expect(result.finalizationOutcome).toBe("failed");
     expect(result.attempt).toBe(attempt);
     expect(isEmbeddedRunTerminalTimeout(result.terminalState.outcome)).toBe(true);
+    expect(input.terminalBase.runParams.onAttemptTerminalReplaced).not.toHaveBeenCalled();
     expect(result.prepared.timedOutDuringPrompt).toBe(true);
     expect(transcriptMocks.appendAssistantMirrorMessageByIdentity).not.toHaveBeenCalled();
   });
@@ -574,6 +625,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     await vi.advanceTimersByTimeAsync(EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS + 1);
 
     expect(input.finalization.abortSignal.aborted).toBe(false);
+    expect(input.terminalBase.runParams.onAttemptTerminalReplaced).not.toHaveBeenCalled();
     expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
     expect(result.finalizationOutcome).toBe("failed");
     expect(result.attempt).toBe(attempt);
@@ -593,6 +645,33 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       replayMetadata: attempt.replayMetadata,
       toolMetas: attempt.toolMetas,
     });
+  });
+
+  it("does not replace terminal ownership when cancellation arrives during delivery observation", async () => {
+    const input = finalizationInput(settledFailedAttempt());
+    const controller = new AbortController();
+    input.finalization.abortSignal = AbortSignal.any([
+      input.finalization.abortSignal,
+      controller.signal,
+    ]);
+    let observations = 0;
+    input.terminalBase.runParams.resolveReplyDelivery = async () => {
+      if (++observations === 2) {
+        controller.abort(new Error("cancelled before acceptance"));
+      }
+      return "missing";
+    };
+    const text = "The completed tools produced a result.";
+    backendMocks.runSettledFinalization.mockResolvedValueOnce({
+      outcome: "answered",
+      result: {
+        assistant: buildEmbeddedRunnerAssistant({ content: [{ type: "text", text }] }),
+        preparedTerminalReply: prepareAgentRunTerminalReply({ rawText: text }),
+      },
+    });
+    await expect(prepareTerminalWithSettledTurnFinalization(input)).rejects.toThrow();
+    expect(observations).toBe(2);
+    expect(input.terminalBase.runParams.onAttemptTerminalReplaced).not.toHaveBeenCalled();
   });
 
   it.each(["outer", "Stop"])(
@@ -621,6 +700,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
 
       expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
       expect(input.finalization.abortSignal.aborted).toBe(true);
+      expect(input.terminalBase.runParams.onAttemptTerminalReplaced).not.toHaveBeenCalled();
       expect(result.finalizationOutcome).toBe("failed");
       expect(result.attempt).toBe(attempt);
       expect(result.prepared.payloadsWithToolMedia?.[0]).toMatchObject({ isError: true });
