@@ -2353,7 +2353,6 @@ src/process/command-queue.ts	2
 src/process/exec-spawn.ts	3
 src/process/exec.ts	3
 src/process/spawn-secret-input.ts	1
-src/process/spawn-utils.ts	1
 src/process/supervisor/adapters/child.ts	2
 src/process/supervisor/adapters/pty.ts	1
 src/process/terminal-pty.ts	1
@@ -2544,7 +2543,7 @@ ui/src/components/markdown-code-blocks.ts	1
 ui/src/components/markdown-parser.ts	1
 ui/src/components/mcp-app-theme.ts	1
 ui/src/components/session-data.ts	1
-ui/src/components/session-organizer-controller.ts	5
+ui/src/components/session-organizer.ts	5
 ui/src/components/terminal/terminal-connection.ts	2
 ui/src/components/terminal/terminal-controller-lifecycle.ts	1
 ui/src/components/terminal/terminal-panel-upload.ts	2
