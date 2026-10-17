@@ -3,6 +3,7 @@ import { isHeartbeatUserMessage } from "../auto-reply/heartbeat-filter.js";
 import { HEARTBEAT_PROMPT, isHeartbeatAcknowledgementText } from "../auto-reply/heartbeat.js";
 import { stripInternalMetadataForDisplay } from "../auto-reply/reply/display-text-sanitize.js";
 import { stripUserEnvelopeForDisplay } from "../auto-reply/reply/user-envelope-display.js";
+import { HEARTBEAT_TOKEN } from "../auto-reply/tokens.js";
 import { splitMediaOutput } from "../media/parse-output.js";
 import { INTER_SESSION_PROMPT_PREFIX_BASE } from "../sessions/input-provenance.js";
 import {
@@ -37,11 +38,14 @@ export function publicSessionMessageEntry(message: unknown): Record<string, unkn
   if (raw?.includes(INTER_SESSION_PROMPT_PREFIX_BASE)) {
     return undefined;
   }
+  // Public rows have no heartbeat context; truncated tokens remain ordinary replies.
   const roleContent = { role: String(entry.role), content: raw ?? "" };
   if (
     raw &&
     (isHeartbeatUserMessage(roleContent, HEARTBEAT_PROMPT) ||
-      (entry.role === "assistant" && isHeartbeatAcknowledgementText(raw)))
+      (entry.role === "assistant" &&
+        raw.includes(HEARTBEAT_TOKEN) &&
+        isHeartbeatAcknowledgementText(raw)))
   ) {
     return undefined;
   }
@@ -89,7 +93,9 @@ export function publicSessionMessageText(entry: Record<string, unknown>): string
   const roleContent = { role: entry.role, content: text };
   if (
     isHeartbeatUserMessage(roleContent, HEARTBEAT_PROMPT) ||
-    (entry.role === "assistant" && isHeartbeatAcknowledgementText(text))
+    (entry.role === "assistant" &&
+      text.includes(HEARTBEAT_TOKEN) &&
+      isHeartbeatAcknowledgementText(text))
   ) {
     return "";
   }

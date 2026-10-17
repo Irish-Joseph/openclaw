@@ -96,21 +96,13 @@ export function resolveHeartbeatPromptForResponseTool(raw?: string): string {
 
 type StripHeartbeatMode = "heartbeat" | "message";
 const HEARTBEAT_TRAILING_TOKEN_RE = new RegExp(`${escapeRegExp(HEARTBEAT_TOKEN)}[^\\w]{0,4}$`);
-// Models occasionally truncate the silent token mid-word (Gemini replying "no_r").
-// Accept strict fragments only on heartbeat paths, where a bare short reply is
-// never an alert, and require enough characters that ordinary words do not qualify.
-const MIN_TRUNCATED_SILENT_REPLY_CHARS = 4;
+/** Heartbeats accept only strict token prefixes with at least four characters. */
 function isTruncatedSilentReplyText(text: string | undefined): boolean {
-  const trimmed = normalizeOptionalString(text);
-  if (!trimmed) {
-    return false;
-  }
-  const candidate = trimmed.toUpperCase();
-  const token = SILENT_REPLY_TOKEN.toUpperCase();
+  const candidate = text?.trim().toUpperCase() ?? "";
   return (
-    candidate.length >= MIN_TRUNCATED_SILENT_REPLY_CHARS &&
-    candidate.length < token.length &&
-    token.startsWith(candidate)
+    candidate.length >= 4 &&
+    candidate.length < SILENT_REPLY_TOKEN.length &&
+    SILENT_REPLY_TOKEN.startsWith(candidate)
   );
 }
 
