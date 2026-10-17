@@ -33,19 +33,22 @@ export type PreparedAgentRunTerminalReply = {
   terminalReply: AgentRunTerminalReplySnapshot;
 };
 
-/** Classifies raw final text, then removes one standalone edge control line before rendering. */
+/** Returns full prepared text, or undefined for an explicitly silent reply. */
+export function prepareAgentRunReplyText(rawText: string): string | undefined {
+  if (isSilentReplyText(rawText)) {
+    return undefined;
+  }
+  return stripMixedSilentReplyTokens(rawText) ?? rawText.replace(/[\r\n]\s*NO_REPLY\s*$/iu, "");
+}
+
 export function prepareAgentRunTerminalReply(params: {
   rawText?: string;
 }): PreparedAgentRunTerminalReply {
-  const rawText = params.rawText ?? "";
-  if (isSilentReplyText(rawText)) {
-    return { text: "", terminalReply: { disposition: "silent" } };
-  }
-  const text =
-    stripMixedSilentReplyTokens(rawText) ?? rawText.replace(/[\r\n]\s*NO_REPLY\s*$/iu, "");
+  const text = prepareAgentRunReplyText(params.rawText ?? "");
   return {
-    text,
-    terminalReply: sanitizeAgentRunTerminalReply(text),
+    text: text ?? "",
+    terminalReply:
+      text === undefined ? { disposition: "silent" } : sanitizeAgentRunTerminalReply(text),
   };
 }
 
