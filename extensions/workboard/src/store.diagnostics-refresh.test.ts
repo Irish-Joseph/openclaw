@@ -11,7 +11,8 @@ describe("WorkboardStore diagnostics refresh", () => {
     });
     const blocked = await store.create({ title: "Blocked too long", status: "blocked" });
     // Age the card past the blocked threshold so the warning fires on the first sweep.
-    const aged = Date.now() - 25 * 60 * 60 * 1000;
+    const t0 = blocked.updatedAt;
+    const aged = t0 - 25 * 60 * 60 * 1000;
     const raw = new DatabaseSync(dbPath);
     try {
       raw.prepare("UPDATE workboard_cards SET updated_at = ? WHERE id = ?").run(aged, blocked.id);
@@ -21,8 +22,9 @@ describe("WorkboardStore diagnostics refresh", () => {
     const before = (await store.get(blocked.id))!;
     expect(before.updatedAt).toBe(aged);
 
-    // First sweep: the warning is persisted without resetting the activity age.
-    await expect(store.refreshDiagnostics()).resolves.toMatchObject({
+    // First sweep at a controlled clock: the warning is persisted without
+    // resetting the activity age.
+    await expect(store.refreshDiagnostics(t0)).resolves.toMatchObject({
       count: 1,
       diagnostics: [
         expect.objectContaining({
@@ -37,14 +39,14 @@ describe("WorkboardStore diagnostics refresh", () => {
     expect(first.metadata?.diagnostics?.[0]).toMatchObject({
       kind: "blocked_too_long",
       count: 1,
+      firstSeenAt: t0,
+      lastSeenAt: t0,
     });
 
-    // Immediate repeat: the warning stays, observations advance, and no card
-    // event is recorded.
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 5);
-    });
-    await expect(store.refreshDiagnostics()).resolves.toMatchObject({
+    // Repeat sweep one minute later (controlled clock): the warning stays,
+    // observations advance, and no card event is recorded.
+    const t1 = t0 + 60 * 1000;
+    await expect(store.refreshDiagnostics(t1)).resolves.toMatchObject({
       count: 1,
       diagnostics: [
         expect.objectContaining({
@@ -59,15 +61,16 @@ describe("WorkboardStore diagnostics refresh", () => {
     expect(second.metadata?.diagnostics?.[0]).toMatchObject({
       kind: "blocked_too_long",
       count: 2,
-      firstSeenAt: first.metadata?.diagnostics?.[0]?.firstSeenAt,
+      firstSeenAt: t0,
+      lastSeenAt: t1,
     });
-    expect(second.metadata?.diagnostics?.[0]?.lastSeenAt).toBeGreaterThan(
-      first.metadata?.diagnostics?.[0]?.lastSeenAt ?? 0,
-    );
 
     // Clearing the condition removes the persisted observations.
     await store.move(blocked.id, "todo", undefined);
-    await expect(store.refreshDiagnostics()).resolves.toEqual({ diagnostics: [], count: 0 });
+    await expect(store.refreshDiagnostics(t0 + 2 * 60 * 1000)).resolves.toEqual({
+      diagnostics: [],
+      count: 0,
+    });
     const cleared = (await store.get(blocked.id))!;
     expect(cleared.metadata?.diagnostics).toBeUndefined();
   });
@@ -76,8 +79,14 @@ describe("WorkboardStore diagnostics refresh", () => {
     const { store } = createWorkboardSqliteTestHarness({ createStores: createKernelStores });
     const card = await store.create({ title: "Fresh work", status: "todo" });
     const before = await store.get(card.id);
-    await expect(store.refreshDiagnostics()).resolves.toEqual({ diagnostics: [], count: 0 });
-    await expect(store.refreshDiagnostics()).resolves.toEqual({ diagnostics: [], count: 0 });
+    await expect(store.refreshDiagnostics(card.updatedAt)).resolves.toEqual({
+      diagnostics: [],
+      count: 0,
+    });
+    await expect(store.refreshDiagnostics(card.updatedAt + 60 * 1000)).resolves.toEqual({
+      diagnostics: [],
+      count: 0,
+    });
     await expect(store.get(card.id)).resolves.toEqual(before);
   });
 });
