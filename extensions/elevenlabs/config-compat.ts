@@ -100,10 +100,10 @@ function* visitElevenLabsModelConfigs(raw: JsonRecord): Generator<ConfigLocation
 }
 
 export function hasLegacyElevenLabsModel(value: unknown): boolean {
-  return Boolean(
-    isRecord(value) &&
-    [...visitElevenLabsModelConfigs(value)].some(([config]) => Object.hasOwn(config, "model")),
-  );
+  if (!isRecord(value)) {
+    return false;
+  }
+  return [...visitElevenLabsModelConfigs(value)].some(([config]) => Object.hasOwn(config, "model"));
 }
 
 export function migrateElevenLabsModelConfig<T>(raw: T): { config: T; changes: string[] } {
