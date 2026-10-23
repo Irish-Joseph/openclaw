@@ -279,8 +279,6 @@ describe("minimax provider hooks", () => {
     ["minimax", "MiniMax-M3", "adaptive"],
     ["minimax-portal", "MiniMax-M3", "adaptive"],
     ["minimax", "MiniMax-M2.7", "off"],
-    ["minimax", "MiniMax-M3.1-Flash", "max"],
-    ["minimax-portal", "MiniMax-M3.1-Flash", "max"],
   ])("defaults %s/%s thinking to %s", (providerId, modelId, defaultLevel) => {
     const provider = providerId === "minimax" ? apiProvider : portalProvider;
     expect(provider.resolveThinkingProfile?.({ provider: provider.id, modelId })).toMatchObject({
@@ -288,9 +286,12 @@ describe("minimax provider hooks", () => {
     });
   });
 
-  it.each(["MiniMax-M3.1-Flash-Preview", "MiniMax-M3.1-Flash"])(
+  it.each([
+    ["MiniMax-M3.1-Flash-Preview", { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }],
+    ["MiniMax-M3.1-Flash", { input: 0.15, output: 0.6, cacheRead: 0.015, cacheWrite: 0 }],
+  ])(
     "discovers %s with its mandatory five-level thinking profile on both auth routes",
-    async (modelId) => {
+    async (modelId, cost) => {
       for (const provider of [apiProvider, portalProvider]) {
         const ref = { provider: provider.id, modelId };
         const catalog = await provider.staticCatalog?.run({ env: {}, config: {} } as never);
@@ -303,7 +304,7 @@ describe("minimax provider hooks", () => {
             contextWindow: 1_000_000,
             reasoning: true,
             compat: { codeMode: "preferred" },
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            cost,
           }),
         );
         expect(provider.resolveThinkingProfile?.(ref)).toEqual({

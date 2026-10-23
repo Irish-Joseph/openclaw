@@ -22,6 +22,15 @@ export const MINIMAX_HOSTED_COST = {
   cacheRead: 0,
   cacheWrite: 0,
 };
+// MiniMax publishes the launch model's per-token API rates ($0.15 input, $0.60
+// output, $0.015 cache read per million) on its pricing page; only the
+// preview id remained without published per-token pricing.
+export const MINIMAX_M31_FLASH_API_COST = {
+  input: 0.15,
+  output: 0.6,
+  cacheRead: 0.015,
+  cacheWrite: 0,
+};
 export const MINIMAX_LM_STUDIO_COST = {
   input: 0,
   output: 0,
@@ -35,9 +44,10 @@ type MinimaxTextModelDefinition = Omit<ModelDefinitionConfig, "input"> & {
 };
 
 const MINIMAX_API_COSTS = new Map<string, ModelDefinitionConfig["cost"]>([
-  // M3.1 is Token Plan-only; MiniMax has not published per-token prices.
+  // The preview id kept the hosted zero fields because its per-token pricing
+  // is unavailable; the launch id carries MiniMax's published API rates.
   [MINIMAX_M31_MODEL_ID, MINIMAX_HOSTED_COST],
-  [MINIMAX_M31_FLASH_MODEL_ID, MINIMAX_HOSTED_COST],
+  [MINIMAX_M31_FLASH_MODEL_ID, MINIMAX_M31_FLASH_API_COST],
   ["MiniMax-M2.7", { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 }],
   ["MiniMax-M2.5-highspeed", { input: 0.6, output: 2.4, cacheRead: 0.03, cacheWrite: 0.375 }],
   ["MiniMax-M2.5", { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0.375 }],
