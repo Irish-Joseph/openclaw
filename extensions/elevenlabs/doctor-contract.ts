@@ -8,7 +8,7 @@ import {
   migrateElevenLabsLegacyTalkConfig,
 } from "./config-compat.js";
 
-export { hasLegacyTalkFields } from "./config-compat.js";
+export { hasLegacyElevenLabsModel, hasLegacyTalkFields } from "./config-compat.js";
 
 export const legacyConfigRules: ChannelDoctorLegacyConfigRule[] = [
   {
