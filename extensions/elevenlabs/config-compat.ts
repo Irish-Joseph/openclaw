@@ -111,6 +111,7 @@ export function migrateElevenLabsModelConfig<T>(raw: T): { config: T; changes: s
     return { config: raw, changes: [] };
   }
 
+  // SAFETY: early return above guarantees raw is a plain record.
   const nextRoot = structuredClone(raw) as JsonRecord;
   const changes: string[] = [];
   for (const [config, pathLabel] of visitElevenLabsModelConfigs(nextRoot)) {
@@ -132,6 +133,7 @@ export function migrateElevenLabsModelConfig<T>(raw: T): { config: T; changes: s
       `Removed invalid ${pathLabel}.model; set ${pathLabel}.modelId to a non-empty string.`,
     );
   }
+  // SAFETY: nextRoot is a deep clone of the original config with only model/modelId keys rewritten.
   return { config: nextRoot as T, changes };
 }
 
@@ -186,6 +188,7 @@ export function migrateElevenLabsLegacyTalkConfig<T>(raw: T): { config: T; chang
     };
   }
 
+  // SAFETY: early return above guarantees raw is a plain record.
   const nextRoot = structuredClone(raw) as JsonRecord;
   const nextTalk = ensureRecord(nextRoot, "talk");
   const providers = ensureRecord(nextTalk, "providers");
@@ -206,6 +209,7 @@ export function migrateElevenLabsLegacyTalkConfig<T>(raw: T): { config: T; chang
   providers[providerId] = migratedProvider;
 
   return {
+    // SAFETY: nextRoot is a deep clone of the original config with only talk fields moved.
     config: nextRoot as T,
     changes: [
       `Moved talk legacy fields (${movedKeys.join(", ")}) → talk.providers.${providerId} (filled missing provider fields only).`,
