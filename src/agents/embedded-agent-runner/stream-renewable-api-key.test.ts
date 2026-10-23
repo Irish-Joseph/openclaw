@@ -175,8 +175,9 @@ const terminalProviderStream = (error: unknown) => {
   const stream = createAssistantMessageEventStream();
   const output = makeAssistantMessageFixture({});
   Object.assign(output, projectProviderError(error));
+  const terminalOutput = output as typeof output & { stopReason: "aborted" | "error" };
   stream.push({ type: "start", partial: output });
-  stream.push({ type: "error", reason: output.stopReason, error: output });
+  stream.push({ type: "error", reason: terminalOutput.stopReason, error: terminalOutput });
   stream.end();
   return stream;
 };
@@ -188,7 +189,11 @@ const successStream = () => {
   stream.push({ type: "start", partial: base });
   stream.push({ type: "text_start", contentIndex: 0, partial: base });
   stream.push({ type: "text_delta", contentIndex: 0, delta: "ok" });
-  const done = { ...base, stopReason: "stop" as const, content: [{ type: "text", text: "ok" }] };
+  const done = {
+    ...base,
+    stopReason: "stop" as const,
+    content: [{ type: "text", text: "ok" }],
+  } as typeof base;
   stream.push({
     type: "text_end",
     contentIndex: 0,
@@ -209,7 +214,8 @@ const failedAfterOutputStream = (error: unknown) => {
   stream.push({ type: "text_delta", contentIndex: 0, delta: "partial" });
   const failed = makeAssistantMessageFixture({});
   Object.assign(failed, projectProviderError(error));
-  stream.push({ type: "error", reason: failed.stopReason, error: failed });
+  const failedTerminal = failed as typeof failed & { stopReason: "aborted" | "error" };
+  stream.push({ type: "error", reason: failedTerminal.stopReason, error: failedTerminal });
   stream.end();
   return stream;
 };
@@ -444,7 +450,7 @@ describe("isTokenExpiredUnauthorizedTerminal", () => {
       ...projectProviderError(error),
       ...overrides,
     };
-    return { stopReason: "error", ...projected } as Parameters<
+    return { ...projected, stopReason: "error" } as Parameters<
       typeof isTokenExpiredUnauthorizedTerminal
     >[0];
   };

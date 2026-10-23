@@ -328,7 +328,7 @@ function wrapEmbeddedAgentStreamApiKey(
           // so no tool work settled: one forced same-profile reacquisition and
           // one retried request preserve replay safety.
           assertCurrent?.();
-          const renewed = await resolveRenewableApiKey({ forceRefresh: true });
+          const renewed = await resolveRenewableApiKey?.({ forceRefresh: true });
           assertCurrent?.();
           if (!renewed?.trim() || renewed === requestOptions.apiKey) {
             return null;
