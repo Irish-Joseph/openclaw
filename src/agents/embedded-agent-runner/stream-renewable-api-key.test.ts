@@ -170,6 +170,24 @@ const revokedGrantTransportError = () =>
     },
   });
 
+/**
+ * The exact throw shape the real OpenAI Responses transport client surfaces
+ * for a wire 401: the SDK `APIError` message already embeds the status
+ * without the local projection's colon ("401 The authentication token is
+ * expired"), and its `code`/`error` fields carry the provider code.
+ */
+const responsesSdk401Error = () =>
+  Object.assign(new Error("401 The authentication token is expired"), {
+    status: 401,
+    code: "token_expired",
+    message: "401 The authentication token is expired",
+    error: {
+      code: "token_expired",
+      type: "invalid_request_error",
+      message: "The authentication token is expired",
+    },
+  });
+
 /** A terminal transport stream exactly as `failTransportStream` produces one. */
 const terminalProviderStream = (error: unknown) => {
   const stream = createAssistantMessageEventStream();
@@ -481,6 +499,15 @@ describe("isTokenExpiredUnauthorizedTerminal", () => {
       status: 403,
     });
     expect(isTokenExpiredUnauthorizedTerminal(terminalFor(error))).toBe(false);
+  });
+
+  it("accepts the real Responses SDK 401 projection (status-embedded message, provider code)", () => {
+    const projection = projectProviderError(responsesSdk401Error());
+    // The production fact: the SDK message keeps the status without the
+    // projection's colon, and the provider code shadows the HTTP status.
+    expect(projection.errorMessage).toBe("401 The authentication token is expired");
+    expect(projection.errorCode).toBe("token_expired");
+    expect(isTokenExpiredUnauthorizedTerminal(terminalFor(responsesSdk401Error()))).toBe(true);
   });
 
   it("rejects a 401 without an expiry fact (revoked grant, invalid key)", () => {

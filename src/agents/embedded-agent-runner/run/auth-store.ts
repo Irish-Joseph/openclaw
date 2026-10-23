@@ -117,11 +117,13 @@ export function isTokenExpiredUnauthorizedTerminal(
     return false;
   }
   // Unauthorized facts only: the projected error code carrying the HTTP 401
-  // status, or the deterministic "401: " prefix the local projection applies
-  // when the transport reported that status. Provider prose never qualifies.
+  // status, or the deterministic "401" status prefix the local projection
+  // applies ("401: ") or the SDK already embedded in its message ("401 ").
+  // Provider prose never qualifies.
   const unauthorized =
     terminal.errorCode === "401" ||
-    (typeof terminal.errorMessage === "string" && terminal.errorMessage.startsWith("401: "));
+    (typeof terminal.errorMessage === "string" &&
+      (terminal.errorMessage.startsWith("401: ") || terminal.errorMessage.startsWith("401 ")));
   if (!unauthorized) {
     return false;
   }
