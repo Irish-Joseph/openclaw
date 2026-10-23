@@ -1,5 +1,6 @@
 import type { AgentRunTimeoutPhase } from "@openclaw/normalization-core/agent-run-terminal-outcome";
 import type { FastMode } from "@openclaw/normalization-core/string-coerce";
+import type { HeartbeatToolResponse } from "../../../auto-reply/heartbeat-tool-response.js";
 import type { ThinkLevel } from "../../../auto-reply/thinking.js";
 import type {
   SessionContextBudgetStatus,
@@ -195,6 +196,12 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   contextWindowInfo?: ContextWindowInfo;
   /** Resolved API key for this run when runtime auth did not replace it. */
   resolvedApiKey?: string;
+  /**
+   * Re-resolves the selected Sign-in-with-ChatGPT profile's current access
+   * immediately before each model request. Absent for static-key, token,
+   * and provider-exchange credentials, which keep the captured contract.
+   */
+  resolveRenewableApiKey?: import("./auth-store.js").ResolveRenewableApiKey;
   /** Auth profile resolved for this attempt's provider/model call. */
   authProfileId?: string;
   /** Source for the resolved auth profile (user-locked or automatic). */
@@ -434,6 +441,7 @@ export type EmbeddedRunAttemptResult = {
   messagingToolSentMediaUrls: string[];
   messagingToolSentTargets: MessagingToolSend[];
   messagingToolSourceReplyPayloads?: MessagingToolSourceReplyPayload[];
+  heartbeatToolResponse?: HeartbeatToolResponse;
   toolMediaUrls?: string[];
   /**
    * Native artifacts produced and owned by the harness, never model-selected
