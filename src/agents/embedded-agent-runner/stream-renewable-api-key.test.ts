@@ -38,10 +38,10 @@ import {
 } from "./run/auth-store.js";
 import { selectEmbeddedAgentStream } from "./stream-resolution.js";
 
-// mock-isolation: the canonical owner runs unmocked; every environment, CLI,
-// and plugin credential source around it is fixed so the tests never observe
-// machine-local credentials.
-vi.mock("../model-auth-env-vars.js", () => ({
+// mock-isolation: fixed env-credential lookup tables; the canonical owner
+// runs unmocked and no machine-local env credential may leak into it.
+vi.mock("../model-auth-env-vars.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../model-auth-env-vars.js")>()),
   resolveProviderEnvAuthLookupMaps: () => ({
     aliasMap: {},
     envCandidateMap: { openai: ["OPENAI_API_KEY"] },
@@ -56,8 +56,10 @@ const cliCredentialMocks = vi.hoisted(() => ({
     () => null,
   ),
 }));
+// mock-isolation: no host CLI credentials may satisfy the canonical owner.
 vi.mock("../cli-credentials.js", () => cliCredentialMocks);
 
+// mock-isolation: no host plugin-provided auth profiles may satisfy the owner.
 vi.mock("../../plugins/provider-external-auth-core.js", () => ({
   createProviderExternalAuthResolver: () => ({
     resolveExternalAuthProfilesWithPlugins: () => [],
